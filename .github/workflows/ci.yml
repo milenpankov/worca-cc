@@ -419,6 +419,32 @@ jobs:
       - name: Mock-mode smoke inside the image
         run: npm run docker:smoke -- --image ghcr.io/sinishadjukic/worca:ci
 
+      # The worker image (docs/workers.md): the `worker` target with Claude Code only, slim,
+      # amd64, loaded locally; then its contract (uid 1000, no sudo, exit 78 without an
+      # assignment, `--check`, WORCA_NO_DB, SIGTERM). The other engines are built by the
+      # release workflow.
+      - name: Build worker image (claude, slim, amd64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: worker
+          load: true
+          tags: ghcr.io/sinishadjukic/worca-worker:ci
+          build-args: |
+            WORCA_TARBALL=${{ steps.pack.outputs.tarball }}
+            CLAUDE_CODE_VERSION=${{ steps.pack.outputs.claude_code }}
+            VARIANT=slim
+            ENGINE=claude
+            APT_REFRESH=${{ steps.pack.outputs.apt_refresh }}
+          cache-from: |
+            type=gha,scope=ci-worker-claude
+            type=gha,scope=ci-slim
+          cache-to: type=gha,scope=ci-worker-claude,mode=max
+
+      - name: Worker contract smoke
+        run: node tools/docker-smoke.mjs --worker-image ghcr.io/sinishadjukic/worca-worker:ci
+
       # Blocking: the Debian layer we ship. Node/npm library findings inside the
       # base image (e.g. node-tar under the bundled npm) are the node image's to
       # fix and arrive with the weekly rebuild's newer base, so they are reported

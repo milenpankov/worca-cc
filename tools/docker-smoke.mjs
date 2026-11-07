@@ -24,6 +24,14 @@
 //   5. Agent isolation there: a fake `claude` started through runClaude runs as
 //      worca-agent, without a GitHub token, cannot read the server's environment,
 //      database or HOME, and commits in a project worca owns.
+//
+//   npm run docker:smoke -- --worker-image ghcr.io/sinishadjukic/worca-worker:dev-claude
+//
+// With --worker-image the WORKER image's contract (docs/workers.md) is checked instead (or as
+// well, when --image is given too): uid 1000, no sudo, `worca worker` without an assignment
+// exits 78 naming WORCA_CONTROLLER_URL, `--check` lists the engines with claude present,
+// WORCA_NO_DB=1 in the environment, and a worker stuck on a controller that never answers
+// leaves within 20 s of SIGTERM. Offline, no token.
 // ESM, no external dependencies.
 
 import { spawnSync } from 'node:child_process';
@@ -36,13 +44,16 @@ import process from 'node:process';
 const DEFAULT_IMAGE = 'ghcr.io/sinishadjukic/worca:dev';
 
 function parseArgs(argv) {
-  const out = { image: DEFAULT_IMAGE, keep: false, user: null };
+  const out = { image: null, workerImage: null, keep: false, user: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--image') out.image = argv[++i];
+    else if (argv[i] === '--worker-image') out.workerImage = argv[++i];
     else if (argv[i] === '--keep') out.keep = true;
     else if (argv[i] === '--user') out.user = argv[++i];
     else { console.error(`docker:smoke: unknown argument ${argv[i]}`); process.exit(2); }
   }
+  // The controller checks run by default; `--worker-image` alone runs the worker checks only.
+  if (!out.image && !out.workerImage) out.image = DEFAULT_IMAGE;
   return out;
 }
 
@@ -214,7 +225,77 @@ async function agentIsolation(inBox) {
   else ok('agent isolation: the server can read and remove what the agent wrote');
 }
 
+/**
+ * The worker image (docker/Dockerfile `worker` target, docker/entrypoint-worker.sh): runs as uid
+ * 1000 with no sudo, refuses an incomplete assignment with 78 and the variable's name, lists its
+ * engines offline, never opens the database, and leaves promptly on SIGTERM even while its
+ * controller never answers (a TCP black hole stands in for one).
+ */
+async function workerImage(img) {
+  console.log(`docker:smoke: worker image ${img}`);
+  const net = `worca-smoke-net-${stamp}`;
+  const hole = `worca-smoke-hole-${stamp}`;
+  const worker = `worca-smoke-worker-${stamp}`;
+  const assignment = ['-e', 'WORCA_WORKER_SCOPE=run:smoke', '-e', 'WORCA_WORKER_ID=w-smoke', '-e', 'WORCA_WORKER_TOKEN=smoke-token-never-valid'];
+  try {
+    const uid = docker(['run', '--rm', img, 'id', '-u'], { allowFail: true });
+    if (uid.status !== 0 || uid.stdout.trim() !== '1000') fail(`worker: id -u -> ${uid.stdout.trim() || uid.stderr.trim()} (exit ${uid.status}), expected 1000`);
+    else ok('worker: runs as uid 1000');
+
+    const sudo = docker(['run', '--rm', img, 'sudo', 'true'], { allowFail: true });
+    if (sudo.status !== 127) fail(`worker: sudo true exited ${sudo.status}, expected 127 (no sudo in the image)`);
+    else ok('worker: sudo is absent (127)');
+
+    const noEnv = docker(['run', '--rm', img, 'worca', 'worker'], { allowFail: true });
+    if (noEnv.status !== 78 || !/WORCA_CONTROLLER_URL/.test(noEnv.stderr)) fail(`worker: no assignment -> exit ${noEnv.status}, expected 78 naming WORCA_CONTROLLER_URL\n${noEnv.stderr}`);
+    else ok('worker: without an assignment exits 78 and names WORCA_CONTROLLER_URL');
+
+    const check = docker(['run', '--rm', img, 'worca', 'worker', '--check'], { allowFail: true });
+    let caps = null;
+    try { caps = JSON.parse(check.stdout); } catch { /* not JSON */ }
+    if (check.status !== 0 || !caps?.engines || !caps.engines.claude) fail(`worker: --check -> exit ${check.status}, engines.claude ${JSON.stringify(caps?.engines?.claude ?? null)}\n${check.stderr}`);
+    else ok(`worker: --check lists claude ${caps.engines.claude.version || '(no version)'} at ${caps.engines.claude.bin}`);
+
+    const noDb = docker(['run', '--rm', img, 'printenv', 'WORCA_NO_DB'], { allowFail: true });
+    if (noDb.stdout.trim() !== '1') fail(`worker: WORCA_NO_DB=${noDb.stdout.trim() || '(unset)'}, expected 1`);
+    else ok('worker: WORCA_NO_DB=1');
+
+    // A controller that accepts the TCP connection and never completes the handshake: the worker
+    // sits in its connect, and SIGTERM must still get it out within the stop timeout.
+    docker(['network', 'create', net]);
+    docker(['run', '-d', '--name', hole, '--network', net, img, 'node', '-e', 'require("node:net").createServer(() => {}).listen(4318, "0.0.0.0"); setInterval(() => {}, 1e6);']);
+    docker(['run', '-d', '--name', worker, '--network', net, '-e', `WORCA_CONTROLLER_URL=ws://${hole}:4318`, ...assignment, img]);
+    await sleep(2500);
+    const running = docker(['inspect', '-f', '{{.State.Running}}', worker], { allowFail: true }).stdout.trim();
+    if (running !== 'true') {
+      const logs = docker(['logs', worker], { allowFail: true });
+      fail(`worker: left before SIGTERM (exit ${docker(['inspect', '-f', '{{.State.ExitCode}}', worker], { allowFail: true }).stdout.trim()})\n${logs.stdout}${logs.stderr}`);
+    } else {
+      const t0 = Date.now();
+      docker(['stop', '-t', '20', worker]);
+      const code = Number(docker(['wait', worker]).stdout.trim());
+      const took = Date.now() - t0;
+      const logs = docker(['logs', worker], { allowFail: true });
+      if (took >= 20_000 || code === 137) fail(`worker: SIGTERM -> exit ${code} after ${took} ms (137 = killed by the stop timeout)\n${logs.stderr}`);
+      else if (!/worca-worker-entrypoint: engine claude/.test(logs.stderr)) fail(`worker: the entrypoint did not log its engine\n${logs.stderr}`);
+      else ok(`worker: SIGTERM -> exit ${code} in ${took} ms; the entrypoint logged engine, scope and HOME`);
+      if (/smoke-token-never-valid/.test(`${logs.stdout}${logs.stderr}`)) fail('worker: the token appeared in the log');
+    }
+  } finally {
+    if (!a.keep) {
+      docker(['rm', '-f', hole, worker], { allowFail: true });
+      docker(['network', 'rm', net], { allowFail: true });
+    } else console.log(`docker:smoke: kept containers ${hole}, ${worker} and network ${net}`);
+  }
+}
+
 async function main() {
+  if (a.workerImage) await workerImage(a.workerImage);
+  if (!a.image) {
+    if (failed) process.exit(1);
+    console.log('docker:smoke PASSED');
+    return;
+  }
   const repo = freshRepo();
   const common = [
     '-e', 'WORCA_MOCK=1',

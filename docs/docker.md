@@ -73,6 +73,22 @@ signature:
 | `…-full` | the above plus Python 3, build tools and Chromium (the manual web-UI-testing agent, Python projects, native npm modules, the Architecture (C4) JPEG/PNG export and the Presentation PDF and audit) |
 | `1.3.0-20260921` | a weekly rebuild of that version with the newest Debian packages |
 
+The **worker image**, `ghcr.io/sinishadjukic/worca-worker`, runs one run's or one chat's agents
+in a container of its own for a controller running the image above (`worca worker`; see
+[Worker image contract](#worker-image-contract) and `docs/workers.md`). Same tags, each with the
+engine it carries; built from the same `docker/Dockerfile` (its `worker` target), signed the same way:
+
+| Tag | Holds |
+| --- | --- |
+| `worca-worker:1.3.0-claude`, `…-claude-full`, `latest-claude`, `rc-claude`, … | Worca's worker and a pinned Claude Code; `-full` adds what the controller's `-full` has, plus `uv` and the Railway CLI |
+| `worca-worker:1.3.0-<engine>` for `codex`, `copilot`, `gemini`, `qwen`, `opencode`, `goose`, `cursor` | the worker and that one engine CLI, at the version [`docker/engines.env`](../docker/engines.env) pins (slim only) |
+| `worca-worker:1.3.0-all`, `…-all-full` | every engine Worca knows, in one image |
+
+Each worker image labels its engine: `docker inspect --format '{{index .Config.Labels "dev.worca.engine"}}' <image>`,
+and `docker run --rm <image> worca worker --check` prints the engines it finds, with their versions, as JSON.
+The `goose` and `cursor` images (and `all`, which holds them) depend on upstream releases that do not
+exist for every architecture every time, so a release may lack them while every other image ships.
+
 Verify with cosign 3 or later: images are signed with cosign 3, whose new bundle format cosign 2
 doesn't find; cosign 3 verifies the older images too.
 
@@ -413,23 +429,67 @@ by default; unreachable under the egress overlay.
 ## Building it yourself
 
 ```bash
-npm run docker:build                      # ghcr.io/sinishadjukic/worca:dev from this checkout
+npm run docker:build                                    # ghcr.io/sinishadjukic/worca:dev from this checkout
 npm run docker:build -- --variant full
-npm run docker:smoke                      # offline proof: CLI mock run, UI health, Host guard, SIGTERM, volume
+npm run docker:build -- --target worker                 # ghcr.io/sinishadjukic/worca-worker:dev-claude
+npm run docker:build -- --target worker --engine codex  # ...worca-worker:dev-codex (or gemini, qwen, copilot,
+                                                        #   opencode, goose, cursor, all)
+npm run docker:smoke                                    # offline proof: CLI mock run, UI health, Host guard, SIGTERM, volume
+npm run docker:smoke -- --worker-image ghcr.io/sinishadjukic/worca-worker:dev-claude   # the worker contract
 ```
 
 The build packs the package with `npm pack` and installs that tarball, the same
-path CI and the release take, so what runs in the box is what npm ships. The
-Claude Code pin is [`docker/CLAUDE_CODE_VERSION`](../docker/CLAUDE_CODE_VERSION).
+path CI and the release take, so what runs in the box is what npm ships. One
+`docker/Dockerfile` builds both images: its stages are `os` (Debian packages, the
+`worca` user), `pkg` (the tarball, `npm ci`), `engines` (the engine CLIs for
+`--engine`), `worker`, and `controller` last, so a build with no `--target` is the
+controller. The Claude Code pin is [`docker/CLAUDE_CODE_VERSION`](../docker/CLAUDE_CODE_VERSION);
+the other engines' pins are [`docker/engines.env`](../docker/engines.env) (`KEY=value`, every
+line a build arg; `docker/engines/install.sh` installs them and runs each binary's `--version`,
+so a release that does not run on the build's architecture fails the build). The goose
+tarball is checked against the sha256 pinned there; an empty sha skips the check with a warning
+in the build log.
 
 What the build pulls in is locked. The package ships `npm-shrinkwrap.json`, and the
 image installs exactly that tree with `npm ci` in the unpacked tarball (a global
 install of a local tarball would ignore the shrinkwrap; an `npm install -g @worca/app`
-from the registry honours it). The `node:22-bookworm-slim` base is pinned by digest
+from the registry honours it). The `node:24-bookworm-slim` base is pinned by digest
 and the workflows' third-party actions by commit SHA; Dependabot
 ([`.github/dependabot.yml`](../.github/dependabot.yml)) proposes the bumps. Two optional
 dependencies run install scripts: `node-pty` builds its native module (or is skipped
 where there is no compiler) and `ffmpeg-static` downloads its ffmpeg binary.
+
+### Worker image contract
+
+A worker container is started by the controller's backend, not by hand; this is what it
+expects of its container (`docker/entrypoint-worker.sh` checks it, `src/worker/main.mjs` reads it;
+the protocol is in `docs/workers.md`).
+
+**Environment.** Required: `WORCA_CONTROLLER_URL` (`ws://` or `wss://`, the controller's worker
+port), `WORCA_WORKER_SCOPE` (`run:<id>` or `chat:<id>`), `WORCA_WORKER_ID`, and the one-time
+`WORCA_WORKER_TOKEN` or `WORCA_WORKER_TOKEN_FILE`. Optional: `WORCA_WORKER_HOME`,
+`WORCA_WORKER_IDLE_MS`, `WORCA_WORKER_RELAY_PORT`, and `WORCA_CA_CERT_FILE` as on the
+controller. The image sets `WORCA_NO_DB=1`, `WORCA_ROLE=worker` and `WORCA_WORKER_ENGINE=<engine>`.
+A missing required variable exits **78** naming it.
+
+**Paths.** `/worca` (the Worca home) and `/projects` must be mounted **at the same paths as on
+the controller** and be writable by uid 1000: the controller hands the worker paths under them
+(the run's checkout, the chat's folder). An unwritable mount exits 78 with the fix; `fsGroup` is not
+applied on NFS volumes, so export such a share owned by uid 1000 (or `anonuid=1000`). The worker's
+`HOME` is `/worca/.worca-cc/worker-homes/<kind>/<id>` unless `WORCA_WORKER_HOME` says otherwise,
+created on start; the npm, uv and Playwright caches go to `/worca/.worca-cc/worker-cache/`.
+
+**What it never has.** No `sudo`, no second user, no sudoers file (one worker serves one run or
+one chat; the container is the boundary). No GitHub token, no broker secret and no database: the
+controller passes an agent's credentials per spawn and does the git pushes and PRs itself.
+No published port and no `HEALTHCHECK`; the connection is outbound, and the controller's heartbeat
+is the liveness check.
+
+**Exit codes.** `0` after a shutdown the controller asked for, an idle timeout, or a refusal it
+was told about; `1` when the controller connection dropped; `78` for an incomplete assignment or
+an unwritable volume; `143` after SIGTERM is what the process returns, which `tini -e 143` maps to
+`0` so a `docker stop` reads as a clean exit. `docker run --rm <image> worca worker --check` exits
+0 and prints the engines found, without connecting anywhere.
 
 Hacking on Worca inside the box: [CONTRIBUTING.md](../CONTRIBUTING.md#in-a-container).
 
