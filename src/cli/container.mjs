@@ -23,7 +23,9 @@ import { resolveUpstream, upstreamLabel } from '../core/upstream-proxy.mjs';
 
 /** The compose files shipped in the package (package.json `files`). */
 export const COMPOSE_SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docker');
-export const OVERLAYS = Object.freeze(['egress', 'ssh', 'teams', 'clonein']);
+export const OVERLAYS = Object.freeze(['egress', 'ssh', 'teams', 'clonein', 'workers']);
+/** The label every worker container the controller starts carries (src/core/executor/backends/docker.mjs). */
+export const WORKER_CONTAINER_LABEL = 'worca.controller';
 const STATE_FILE = '.worca-container.json';
 /** The proxy variables compose.yml interpolates into the box (case-sensitive: compose reads these names only). */
 const PROXY_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY'];
@@ -36,7 +38,8 @@ export const CONTAINER_HELP = `worca container — run Worca in a container (doc
   worca container init [--projects <dir>]        Write the compose files and a .env into the container dir
   worca container up [--with <overlays>] [--tag <t>]
                                                  Start the box in the background and print the URL.
-                                                 --with: comma-separated egress,ssh,teams,clonein (remembered)
+                                                 --with: comma-separated egress,ssh,teams,clonein,workers (remembered)
+                                                 workers: agents in their own containers (docs/workers.md)
   worca container down                           Stop and remove the containers (volumes are kept)
   worca container status                         Which containers are up
   worca container logs [--follow]                Server logs
@@ -321,7 +324,18 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
       out(`  Stop:         ${c('bold', 'worca container down')}`);
       return 0;
     }
-    case 'down': return compose(['down']);
+    case 'down': {
+      const code = compose(['down']);
+      // Worker containers (compose.workers.yml) are started by the controller, not by compose, so
+      // `down` does not know them: whatever is left is removed by its label. Best effort.
+      const ps = exec(rt.bin, ['ps', '-aq', '--filter', `label=${WORKER_CONTAINER_LABEL}`], { cwd: dir, env: composeEnv, stdio: ['ignore', 'pipe', 'ignore'] });
+      const ids = String(ps.stdout || '').split(/\s+/).filter(Boolean);
+      if (ids.length) {
+        exec(rt.bin, ['rm', '-f', ...ids], { cwd: dir, env: composeEnv, stdio: 'ignore' });
+        out(`removed ${ids.length} worker container(s)`);
+      }
+      return code;
+    }
     case 'status': return compose(['ps']);
     case 'logs': return compose(['logs', ...(a.follow ? ['-f'] : []), 'worca']);
     case 'pull': return compose(['pull', 'worca']);

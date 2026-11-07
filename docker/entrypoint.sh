@@ -29,6 +29,13 @@ agent_gitconfig() { # <user> <home>
 # from this same image. It needs none of the worca preparation below: only, on a host
 # that gives it one root-owned volume (Railway), that volume made writable by `worca`
 # before dropping to that user.
+# A worker (`worca worker`, docs/workers.md) is its own container too: no volume preparation,
+# no agent users (the container is the isolation), no login report. The controller's backend
+# gave it its assignment in the environment; the shared volume is already laid out.
+if [ "${1:-}" = "worca" ] && [ "${2:-}" = "worker" ]; then
+  exec "$@"
+fi
+
 if [ "${1:-}" = "worca" ] && [ "${2:-}" = "broker" ]; then
   if [ -n "${WORCA_BROKER_DATA_DIR:-}" ] && [ "$(id -u)" = 0 ]; then
     mkdir -p "$WORCA_BROKER_DATA_DIR"

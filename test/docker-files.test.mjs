@@ -397,3 +397,29 @@ test('V15/V18: docs/docker.md says host networking binds 127.0.0.1, and which ru
   assert.match(doc, /Docker Desktop, rootless Docker and Podman[^]*?tools\/docker-linux-pass\.sh[^]*?answers 403/);
   assert.ok(existsSync(join(ROOT, 'tools/docker-linux-pass.sh')), 'the Linux pass script the doc names');
 });
+
+test('compose.workers.yml: the controller reaches the Engine through a least-privilege socket proxy on an internal network; no worker port is published', () => {
+  const w = read('docker/compose.workers.yml');
+  assert.match(w, /WORCA_EXECUTOR: docker/);
+  assert.match(w, /WORCA_DOCKER_HOST: tcp:\/\/docker-proxy:2375/);
+  assert.match(w, /WORCA_CONTROLLER_URL: ws:\/\/worca:\$\{WORCA_WORKER_PORT:-4319\}/);
+  assert.match(w, /image: tecnativa\/docker-socket-proxy:\d+\.\d+\.\d+/, 'the proxy image is pinned');
+  assert.match(w, /\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro/, 'the proxy sees the socket read-only');
+  for (const off of ['IMAGES', 'EXEC', 'BUILD', 'VOLUMES', 'SECRETS', 'SWARM', 'SYSTEM']) assert.match(w, new RegExp(`${off}: 0`), `${off} is off`);
+  for (const on of ['CONTAINERS', 'POST', 'ALLOW_START', 'ALLOW_STOP', 'NETWORKS']) assert.match(w, new RegExp(`${on}: 1`), `${on} is on`);
+  assert.match(w, /docker-proxy:\n    internal: true/, 'the proxy network is internal');
+  assert.doesNotMatch(w, /^\s+ports:/m, 'nothing published');
+  assert.doesNotMatch(read('docker/compose.yml'), /docker\.sock/, 'the base compose still mounts no socket');
+  assert.match(read('docker/.env.example'), /^#WORCA_WORKER_IMAGE=/m);
+});
+
+test('entrypoint.sh: `worca worker` execs at once, before any volume preparation or agent-user setup', () => {
+  const e = read('docker/entrypoint.sh');
+  const start = e.indexOf('if [ "${1:-}" = "worca" ] && [ "${2:-}" = "worker" ]');
+  assert.ok(start > 0, 'the worker branch exists');
+  assert.ok(start < e.indexOf('if [ "${1:-}" = "worca" ] && [ "${2:-}" = "broker" ]'), 'before the broker branch');
+  assert.ok(start < e.indexOf('WORCA_DATA_DIR:-'), 'before the single-volume block');
+  const block = e.slice(start, e.indexOf('\nfi\n', start));
+  assert.match(block, /^\s+exec "\$@"$/m);
+  assert.doesNotMatch(block, /setpriv|sudo|chown/);
+});

@@ -432,3 +432,37 @@ dependencies run install scripts: `node-pty` builds its native module (or is ski
 where there is no compiler) and `ffmpeg-static` downloads its ffmpeg binary.
 
 Hacking on Worca inside the box: [CONTRIBUTING.md](../CONTRIBUTING.md#in-a-container).
+
+## Workers: agents in their own containers
+
+With the `workers` overlay the `worca` service becomes a **controller** — it keeps the scheduler,
+the database and the UI — and every run and every chat thread gets a **worker container** of its
+own, started when its first process is needed and removed when the run ends or the thread has
+been idle. See [docs/workers.md](workers.md) for the model.
+
+```sh
+worca container up --with workers
+# or
+docker compose -f compose.yml -f compose.workers.yml up -d
+```
+
+What the overlay does:
+
+- `worca` gets `WORCA_EXECUTOR=docker` and reaches the Docker Engine through a
+  [socket proxy](https://github.com/Tecnativa/docker-socket-proxy) sidecar that allows exactly what
+  the controller needs (create, start, inspect, remove containers; list networks) — never the raw
+  socket. The worker listener (`WORCA_WORKER_PORT`, 4319) is on the compose network only; it is
+  never published.
+- The controller replicates **its own container** onto every worker: the same volumes and bind
+  mounts at the same paths (path parity — the run's checkout, the store and the staged files are
+  where the controller wrote them), the same network (so `ws://worca:4319` and `http://broker:8080`
+  resolve), the same user. The docker socket is never passed on; the Claude login volume rides
+  read-only at `/seed/claude`, from which a fresh worker copies the login once.
+- Worker images are per engine: `WORCA_WORKER_IMAGE` (default
+  `ghcr.io/sinishadjukic/worca-worker:<tag>-{engine}`); `WORCA_WORKER_IMAGE=self` runs workers from
+  the worca image itself (Claude Code only). Pull the worker image for your engine once.
+- `WORCA_WORKER_MEM` (4g), `WORCA_WORKER_CPUS` (2) and `WORCA_WORKER_MAX` (20) bound each worker and
+  how many run at once; `worca container down` removes any worker still around.
+- The broker overlay combines with it (`--with workers,egress` and `-f compose.broker.yml`): workers
+  reach the broker by its service name, and the egress sidecar's proxy address rides through to
+  them (the in-process `WORCA_EGRESS_MODE` proxy does not — use the sidecar).

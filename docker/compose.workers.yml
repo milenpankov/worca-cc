@@ -1,0 +1,57 @@
+# docker/compose.workers.yml — agents in their own containers (docs/workers.md).
+#
+#   docker compose -f compose.yml -f compose.workers.yml up -d
+#   worca container up --with workers
+#
+# The worca service becomes the controller: it keeps the scheduler, the database and the UI, and
+# starts one worker container per run and per chat through the Docker Engine, replicating its own
+# mounts, network and user so every path matches. It reaches the Engine through a socket proxy that
+# allows exactly what it needs (create/start/inspect/remove containers, list networks), never the
+# raw socket. Worker images: ghcr.io/sinishadjukic/worca-worker:<tag>-<engine>; set
+# WORCA_WORKER_IMAGE=self to run workers from the worca image itself (Claude Code only).
+services:
+  worca:
+    depends_on:
+      - docker-proxy
+    environment:
+      WORCA_EXECUTOR: docker
+      WORCA_DOCKER_HOST: tcp://docker-proxy:2375
+      WORCA_WORKER_PORT: ${WORCA_WORKER_PORT:-4319}
+      WORCA_CONTROLLER_URL: ws://worca:${WORCA_WORKER_PORT:-4319}
+      WORCA_WORKER_IMAGE: ${WORCA_WORKER_IMAGE:-ghcr.io/sinishadjukic/worca-worker:${WORCA_TAG:-latest}-{engine}}
+      WORCA_WORKER_MEM: ${WORCA_WORKER_MEM:-4g}
+      WORCA_WORKER_CPUS: ${WORCA_WORKER_CPUS:-2}
+      WORCA_WORKER_MAX: ${WORCA_WORKER_MAX:-20}
+      NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost},docker-proxy,worca,broker,egress
+    networks:
+      - default
+      - docker-proxy
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    environment:
+      CONTAINERS: 1      # list, inspect, create, remove
+      POST: 1            # create/start are POSTs
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      NETWORKS: 1
+      INFO: 1
+      VERSION: 1
+      IMAGES: 0
+      EXEC: 0
+      BUILD: 0
+      VOLUMES: 0
+      SECRETS: 0
+      SWARM: 0
+      SYSTEM: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-proxy
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+networks:
+  docker-proxy:
+    internal: true
