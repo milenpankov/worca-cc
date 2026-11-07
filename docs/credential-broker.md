@@ -305,7 +305,12 @@ model weights. Disable sleep (`sudo pmset -a sleep 0`).
 
 The same two containers: a `broker` Service on the private port inside the namespace, an
 Ingress or cloudflared Deployment for the key page only, and a NetworkPolicy in place of
-`compose.egress.yml`.
+`compose.egress.yml`. The Helm chart ([`deploy/helm/worca`](../deploy/helm/worca/README.md),
+[kubernetes.md](kubernetes.md)) renders all of it with `broker.enabled=true`: a Deployment
+from the worca image with `args: [worca, broker]`, its own volume for `WORCA_BROKER_DATA_DIR`,
+a Service on 8080 (private, `WORCA_BROKER_URL` on the controller and on every worker pod) and
+8081 (the key page, behind `broker.keyPage.ingress`), and worker egress limited to the
+controller and the broker when `networkPolicy.enabled`.
 
 ## Single mode
 

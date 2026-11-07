@@ -1,0 +1,20 @@
+# The controller's workers listener (WORCA_WORKER_PORT): the address every worker pod connects
+# back to (WORCA_CONTROLLER_URL = ws://<this>.<namespace>.svc:4319), authenticated by a one-time
+# token. ClusterIP only, and never on the Ingress. Also the StatefulSet's serviceName.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "worca.workersServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "worca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  type: ClusterIP
+  ports:
+    - name: workers
+      port: {{ .Values.controller.workerPort }}
+      targetPort: workers
+      protocol: TCP
+  selector:
+    {{- include "worca.selectorLabels" . | nindent 4 }}

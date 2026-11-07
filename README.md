@@ -943,6 +943,14 @@ configuration and checks of a running deployment:
 the `tools/railway/worca-railway.mjs` tool and this repository's
 `/worca-railway` skill for Claude Code.
 
+### Kubernetes
+
+On a cluster, Worca runs as one always-on controller pod and an ephemeral worker
+pod per run and per chat thread, created and removed by the controller, with the
+files shared on a ReadWriteMany volume. The Helm chart is
+[`deploy/helm/worca`](deploy/helm/worca/README.md); storage classes, the kind
+quickstart, upgrades and troubleshooting: [`docs/kubernetes.md`](docs/kubernetes.md).
+
 ## Quick start
 
 ### Web UI
@@ -1131,6 +1139,7 @@ The skill starts the same deterministic orchestrator as the CLI;
 - [Remote access](docs/remote-access.md) — opt-in, behind Cloudflare Access, with Worca checking the token
 - [Browser extension](docs/browser-extension.md) — sidebar chat, page context and Pinpoint on web pages; pairing and security model
 - [Deploy on Railway](docs/deploy-railway.md) — the container as a hosted service behind Cloudflare Access
+- [Kubernetes](docs/kubernetes.md) — the Helm chart: a controller pod plus a worker pod per run, the shared volume, storage classes, upgrades and troubleshooting
 - [Releasing](docs/RELEASING.md) — how `@worca/app` versions are published
 - [Screenshots](docs/screenshots.md) — how the shots in this README are made: a sandboxed Worca, demo data, headless Chrome
 - [Contributing](CONTRIBUTING.md) — developing Worca from source

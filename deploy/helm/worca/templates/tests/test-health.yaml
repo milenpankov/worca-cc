@@ -1,0 +1,40 @@
+# `helm test <release>`: the UI answers /api/health through its Service. The Host header is
+# the point: the server's Host guard returns 403 to a Host it does not know (the Service name
+# here), and `localhost` is always accepted.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "worca.fullname" . }}-test-health
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "worca.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: curl
+      image: curlimages/curl:8.11.1
+      command: ["curl", "-fsS", "--max-time", "10", "-H", "Host: localhost",
+                "http://{{ include "worca.fullname" . }}:{{ .Values.service.port }}/api/health"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 64Mi

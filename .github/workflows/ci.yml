@@ -54,6 +54,7 @@ jobs:
       pull-requests: read
     outputs:
       engine: ${{ steps.filter.outputs.engine }}
+      helm: ${{ steps.filter.outputs.helm }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -61,6 +62,11 @@ jobs:
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
+            helm:
+              - 'deploy/helm/**'
+              - 'test/helm-*'
+              - 'test/fixtures/helm/**'
+              - '.github/workflows/ci.yml'
             engine:
               - 'src/**'
               - 'ui/server.mjs'
@@ -438,3 +444,59 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
           skip-setup-trivy: true
+
+  # The Helm chart (deploy/helm/worca, docs/kubernetes.md): lint, render with the default and
+  # the kind values, validate every rendered manifest against the Kubernetes schemas
+  # (kubeconform, a pinned release checked by sha256), and the chart's own test
+  # (test/helm-chart.test.mjs: contracts the executor backend relies on, golden files). Always
+  # on a push to dev; on a pull request only when the chart, its test or its fixtures changed
+  # (`changes` above). The same !cancelled() / != 'false' shape as the slow tier.
+  helm:
+    name: Helm chart
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.helm != 'false') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KUBECONFORM_VERSION: v0.8.0
+      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.17.2
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+          rm -f kubeconform kubeconform.tar.gz
+          kubeconform -v
+
+      - name: helm lint
+        run: |
+          helm lint deploy/helm/worca
+          helm lint deploy/helm/worca -f deploy/helm/worca/values-kind.yaml
+
+      - name: helm template + kubeconform
+        run: |
+          for values in "" deploy/helm/worca/values-kind.yaml test/fixtures/helm/values-full.yaml; do
+            echo "::group::helm template ${values:-default}"
+            helm template worca deploy/helm/worca --namespace worca ${values:+-f "$values"} \
+              | kubeconform -strict -summary -ignore-missing-schemas -schema-location default
+            echo "::endgroup::"
+          done
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Chart test (contracts and golden files)
+        run: node --test test/helm-chart.test.mjs
