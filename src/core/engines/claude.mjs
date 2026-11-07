@@ -12,9 +12,10 @@ import { CLAUDE_CLI } from './cli-specs.mjs';
 import { hostGuardEnabled, hostGuardHookEntry, hostGuardSystemPrompt } from '../host-guard.mjs';
 import { memoryUsageHookEntry } from '../memory-usage.mjs';
 import { readGuardHookEntry, readGuardDecisions } from '../file-read-guard.mjs';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { stagingBase } from '../executor/index.mjs';
 import { agentIdentity } from '../agent-user.mjs';
 import { agentIdentityFor } from '../agent-pool.mjs';
 import { brokerEnabled, brokerInfo, mintSpawnToken, revokeSpawnToken, slotBaseUrl, slotOfBaseUrl } from '../broker-client.mjs';
@@ -500,7 +501,13 @@ export function planClaudeInvocation(opts, { bin = DEFAULT_BIN, dir = null, limi
  *  spawn, and it keeps the spawn sequence in runClaudeProcess linear. */
 export function stageClaudeInvocation(opts, { bin = DEFAULT_BIN, limit = ARGV_INLINE_LIMIT } = {}) {
   let dir = null;
-  const makeDir = () => (dir ??= mkdtempSync(join(tmpdir(), 'worca-claude-')));
+  // Under a remote executor the dir sits on the shared volume, where the worker's claude reads it.
+  const makeDir = () => {
+    if (dir) return dir;
+    const base = stagingBase();
+    if (base !== tmpdir()) mkdirSync(base, { recursive: true });
+    return (dir = mkdtempSync(join(base, 'worca-claude-')));
+  };
   // A8: a guarded read logs every decision of its guard to a file in this private dir: the server's path, never a
   // caller's, read back when the spawn ends (runClaudeProcess) and removed with the dir.
   const o = opts.readGuard != null ? { ...opts, readGuardLog: join(makeDir(), 'read-guard.jsonl') } : opts;

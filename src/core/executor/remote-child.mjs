@@ -1,0 +1,85 @@
+// src/core/executor/remote-child.mjs
+// A ChildProcess-shaped handle for one exec on a worker session: exactly the surface
+// spawn.mjs superviseSpawn and script-runner.mjs spawnScript use — `pid`, `stdout`/`stderr`
+// readable streams, `stdin` (already delivered in the exec frame, so a stub), `exitCode`,
+// `signalCode`, `kill()`, and the 'error' / 'close' events in the same order a local child
+// emits them. The supervisors never learn whether the child is local or remote beyond the
+// `remote` flag, which routes their tree signals through the session instead of `-pid`.
+import { EventEmitter, once } from 'node:events';
+import { PassThrough } from 'node:stream';
+
+/** Why an exec ended without an exit: the worker went away. Classified as a network failure
+ *  so the harness's failure policy retries it, on a fresh worker. */
+export const WORKER_LOST = 'EWORKERLOST';
+
+/** How long to wait for the stdout/stderr consumers to drain after the exit frame before
+ *  'close' is emitted regardless (a consumer that never attached). */
+const DRAIN_GRACE_MS = 2000;
+
+/**
+ * @param {{ workerId: string, exec: (spec: object, handlers: object) => string, signal: (id: string, sig: string) => void }} session
+ * @param {{ file: string, args: string[], cwd: string, env: Record<string,string>, stdin?: string|null, displayBin?: string, detached?: boolean }} spec
+ * @returns {EventEmitter & { remote: true, id: string, pid: number|null, exitCode: number|null, signalCode: string|null,
+ *   stdout: PassThrough, stderr: PassThrough, stdin: object, kill: (sig?: string) => boolean }}
+ */
+export function createRemoteChild(session, { file, args, cwd, env, stdin = null, displayBin = file, detached = true }) {
+  const child = new EventEmitter();
+  child.remote = true;
+  child.workerId = session.workerId;
+  child.pid = null;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  // The bytes already rode the exec frame; a supervisor still calls end() after attaching an error listener.
+  child.stdin = { on() { return this; }, once() { return this; }, end() {}, write() { return true; }, destroy() {} };
+  let ended = false;
+
+  const drainThen = (fn) => {
+    // 'close' must come after every line the supervisors' readers will ever see: the streams are
+    // ended here, and the event waits for both consumers to reach the end (or a grace period, for
+    // a consumer that never attached; the timer is not unref'd so the event always fires).
+    let timer = null;
+    const settle = Promise.all([once(child.stdout, 'close'), once(child.stderr, 'close')]).catch(() => {});
+    const grace = new Promise((r) => { timer = setTimeout(r, DRAIN_GRACE_MS); });
+    Promise.race([settle, grace]).then(() => { clearTimeout(timer); fn(); });
+  };
+  const endStreams = () => {
+    if (ended) return;
+    ended = true;
+    child.stdout.end();
+    child.stderr.end();
+  };
+
+  const id = session.exec({ file, args, cwd, env, stdin, detached }, {
+    onStarted: ({ pid }) => { child.pid = pid; child.emit('spawn'); },
+    onLines: ({ stream, lines }) => {
+      if (ended) return;
+      (stream === 'out' ? child.stdout : child.stderr).write(lines.join('\n') + '\n');
+    },
+    onSpawnError: ({ code, message }) => {
+      endStreams();
+      const err = Object.assign(new Error(message), code ? { code } : {});
+      drainThen(() => child.emit('error', err));
+    },
+    onExit: ({ code, signal }) => {
+      child.exitCode = code;
+      child.signalCode = signal;
+      endStreams();
+      drainThen(() => child.emit('close', code, signal));
+    },
+    onLost: (why) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;   // already exited: nothing to report
+      child.signalCode = 'SIGKILL';
+      endStreams();
+      const err = Object.assign(new Error(`worker ${session.workerId} lost: ${why} (while running ${displayBin})`), { code: WORKER_LOST, errorClass: 'network' });
+      drainThen(() => { child.emit('error', err); child.emit('close', null, 'SIGKILL'); });
+    },
+  });
+  child.id = id;
+  child.kill = (sig = 'SIGTERM') => {
+    if (child.exitCode !== null || child.signalCode !== null) return false;
+    try { session.signal(id, sig); return true; } catch { return false; }
+  };
+  return child;
+}

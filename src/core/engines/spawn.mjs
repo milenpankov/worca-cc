@@ -20,6 +20,8 @@ import { isWithin } from '../fs-scope.mjs';
 import { withNoGitPath } from '../nogit-stub.mjs';
 import { withoutProxyLogin } from '../env-proxy.mjs';
 import { testWorkerCap } from '../settings.mjs';
+import { sessionFor, spawnsRemotely } from '../executor/index.mjs';
+import { createRemoteChild } from '../executor/remote-child.mjs';
 
 // Grace between the abort SIGTERM and the SIGKILL escalation. Claude Code shuts
 // down synchronously (fsync'd ~/.claude.json saves); a SIGKILL that lands inside
@@ -157,7 +159,10 @@ process.on('exit', () => {
 /** Signal a child's whole tree. The group id stays allocated while any member lives, so `-pid`
  *  only ever reaches our descendants; an empty group answers ESRCH. Never throws. */
 export function signalTree(child, sig, { group = true, platform = process.platform } = {}) {
-  if (!child || typeof child.pid !== 'number') return;
+  if (!child) return;
+  // A child on a worker (executor/remote-child.mjs): the worker signals the whole group itself.
+  if (child.remote) { try { child.kill(sig); } catch { /* gone */ } return; }
+  if (typeof child.pid !== 'number') return;
   if (platform === 'win32') {
     if (child.exitCode === null && child.signalCode === null) {
       try { spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { /* best effort */ }
@@ -215,6 +220,22 @@ function noteResolved(r) {
 }
 
 export function superviseSpawn(o) {
+  // The executor seam (executor/index.mjs): a spawn inside a run or chat scope under a remote
+  // executor runs on that scope's worker; everything else — the default — spawns here.
+  if (!spawnsRemotely()) return superviseLocal(o);
+  return sessionFor({ signal: o.signal }).then(
+    (session) => superviseLocal(o, session),
+    (err) => { o.cleanup(); throw o.spawnError(err, `Failed to start a worker for ${o.displayBin}`); },
+  );
+}
+
+/**
+ * The supervisor proper. With a `session` the child is a remote-child on that worker: no sudo
+ * wrapper (the container is the isolation), no local process group, and the complete env is
+ * sent explicitly (a remote exec never inherits this process's environment). Every other line
+ * is the local path.
+ */
+function superviseLocal(o, session = null) {
   const { file, args, cli = GENERIC_CLI, displayBin, cwd, env, stdin, signal, asAgent, stagedDir, agentHome = null, cleanup, onEvent,
     onStdoutLine, onStderrLine = null, stdoutErrorDetail, classify, isBenignStderr = () => false, redactText = null, spawnError, onDone } = o;
   return new Promise((resolveP, rejectP) => {
@@ -228,9 +249,10 @@ export function superviseSpawn(o) {
     };
     // Agent isolation (agent-user.mjs): the same command under the agent's uid, via sudo, in its
     // own process group so a stuck agent can still be SIGKILLed through sudo.
-    const agentId = asAgent ? agentIdentityFor(currentOwner()) : null;   // the owner's pool user (agent-pool.mjs)
-    // E3: our own process group (POSIX). The agent user's sudo spawn already has one (killAgentGroup).
-    const ownGroup = !agentId && process.platform !== 'win32';
+    const agentId = asAgent && !session ? agentIdentityFor(currentOwner()) : null;   // the owner's pool user (agent-pool.mjs)
+    // E3: our own process group (POSIX). The agent user's sudo spawn already has one (killAgentGroup);
+    // a worker owns its children's groups.
+    const ownGroup = !session && !agentId && process.platform !== 'win32';
     let child;
     try {
       const cmd = resolveCliCommand(file, args, cli);
@@ -243,11 +265,13 @@ export function superviseSpawn(o) {
         for (const d of [stagedDir].flat()) if (d) shareWithAgent(typeof d === 'string' ? d : d.dir, agentId, { stopAt: join(worcaHome(), 'tmp'), writable: typeof d === 'object' && d.writable === true });
         ({ file: exe, args: argv, env: childEnv } = agentSpawn(exe, argv, childEnv, agentId, agentHome ? { home: agentHome(agentId) } : {}));
       }
-      child = spawn(exe, argv, {
-        cwd, stdio: [stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'], ...(childEnv ? { env: childEnv } : {}),
-        ...(agentId || ownGroup ? { detached: true } : {}),
-        windowsHide: true,
-      });
+      child = session
+        ? createRemoteChild(session, { file: exe, args: argv, cwd, env: childEnv ?? { ...process.env }, stdin, displayBin })
+        : spawn(exe, argv, {
+          cwd, stdio: [stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'], ...(childEnv ? { env: childEnv } : {}),
+          ...(agentId || ownGroup ? { detached: true } : {}),
+          windowsHide: true,
+        });
       if (ownGroup && typeof child.pid === 'number') trackGroup(child.pid, displayBin);
     } catch (err) {
       cleanup();
@@ -344,7 +368,11 @@ export function superviseSpawn(o) {
     });
 
     child.on('error', (err) => {
-      finish(rejectP, spawnError(withShimHint(err), `${displayBin} error`));
+      const out = spawnError(withShimHint(err), `${displayBin} error`);
+      // A lost worker arrives here pre-classified (remote-child.mjs); an adapter's spawnError that
+      // builds a fresh Error must not drop the class the failure policy acts on.
+      if (err?.errorClass && out && !out.errorClass) out.errorClass = err.errorClass;
+      finish(rejectP, out);
     });
 
     child.on('close', (code) => {

@@ -26,6 +26,8 @@ import { agentIdentityFor } from '../agent-pool.mjs';
 import { currentOwner } from '../billing.mjs';
 import { gitAvailable } from '../git-available.mjs';
 import { withNoGitPath } from '../nogit-stub.mjs';
+import { sessionFor, spawnsRemotely } from '../executor/index.mjs';
+import { createRemoteChild } from '../executor/remote-child.mjs';
 
 const CHILD_PATH = fileURLToPath(new URL('./script-child.mjs', import.meta.url));
 /** The `python` harness (workbench spec §7), spawned as `<python> -u worca_script.py <program.py>`. */
@@ -276,7 +278,10 @@ export async function materializeOutputs(ports, outputs, frame, key) {
  *  only hit OUR descendants; a group that is already empty answers ESRCH, which is caught.
  *  spawnScript calls this only while the spawn is unsettled (i.e. before `'close'`). */
 export function killTree(child, platform = process.platform) {
-  if (!child || typeof child.pid !== 'number') return;
+  if (!child) return;
+  // A child on a worker (executor/remote-child.mjs): the worker kills the whole group itself.
+  if (child.remote) { try { child.kill('SIGKILL'); } catch { /* gone */ } return; }
+  if (typeof child.pid !== 'number') return;
   if (platform === 'win32') {
     // taskkill /T needs the root alive to walk the tree; once it is gone there is nothing left to address.
     if (child.exitCode === null && child.signalCode === null) {
@@ -314,11 +319,19 @@ process.on('exit', () => { for (const [child, platform] of live) killTree(child,
  * Resolves `{ exitCode, signal, timedOut, aborted, stdout, frameOverflow, capture, durationMs }`;
  * rejects only on a spawn failure.
  */
-export function spawnScript({ file, args, cwd, env, stdin = null, timeoutMs, signal, onLine, stdoutMode, platform = process.platform }) {
+export function spawnScript(o) {
+  // The executor seam (executor/index.mjs): a script inside a run scope under a remote executor
+  // runs on that run's worker, in the same container as its agents; the default spawns here.
+  if (!spawnsRemotely()) return spawnScriptOn(o, null);
+  return sessionFor({ signal: o.signal }).then((session) => spawnScriptOn(o, session));
+}
+
+/** The spawn proper; with a `session` the child is a remote-child on that worker (no agent uid, no local group). */
+function spawnScriptOn({ file, args, cwd, env, stdin = null, timeoutMs, signal, onLine, stdoutMode, platform = process.platform }, session) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     // Scripts run the agents' code (tests, builds): under the agent's uid when the container has one.
-    const agent = platform !== 'win32' ? agentIdentityFor(currentOwner()) : null;   // the owner's pool user (agent-pool.mjs)
+    const agent = !session && platform !== 'win32' ? agentIdentityFor(currentOwner()) : null;   // the owner's pool user (agent-pool.mjs)
     let spawnFile = file;
     let spawnArgs = args;
     let spawnEnv = env;
@@ -326,15 +339,17 @@ export function spawnScript({ file, args, cwd, env, stdin = null, timeoutMs, sig
       try { ({ file: spawnFile, args: spawnArgs, env: spawnEnv } = agentSpawn(file, args, env || process.env, agent)); }
       catch (err) { reject(err); return; }
     }
-    const child = spawn(spawnFile, spawnArgs, {
-      cwd,
-      env: spawnEnv,
-      detached: platform !== 'win32',
-      windowsHide: true,
-      windowsVerbatimArguments: platform === 'win32' && stdoutMode === 'capture',
-      stdio: [stdin == null ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-    });
-    live.set(child, platform);
+    const child = session
+      ? createRemoteChild(session, { file: spawnFile, args: spawnArgs, cwd, env: spawnEnv ?? { ...process.env }, stdin, displayBin: file })
+      : spawn(spawnFile, spawnArgs, {
+        cwd,
+        env: spawnEnv,
+        detached: platform !== 'win32',
+        windowsHide: true,
+        windowsVerbatimArguments: platform === 'win32' && stdoutMode === 'capture',
+        stdio: [stdin == null ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      });
+    if (!session) live.set(child, platform);
     if (agent) agentOf.set(child, agent);
     const capture = createCapture();
     const partial = { out: '', err: '' };
