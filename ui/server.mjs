@@ -263,6 +263,13 @@ import {
 } from '../src/core/platform-heartbeat.mjs';
 import { freeDailyStatus } from '../src/core/openrouter-free.mjs';
 import { checkBrokerAtBoot } from '../src/core/broker-boot.mjs';
+import { executorKind, executorConfigError, installExecutor, isRemoteExecutor, releaseWorker, touchWorker, sweepWorkerHomes } from '../src/core/executor/index.mjs';
+import { withExecutorScope } from '../src/core/executor/scope.mjs';
+import { createWorkerRegistry } from '../src/core/executor/registry.mjs';
+import { createBackend } from '../src/core/executor/backends/index.mjs';
+import { DEFAULT_RELAY_PORT as WORKER_RELAY_PORT } from '../src/worker/relay-shim.mjs';
+import { readEgressPolicy } from '../src/core/egress-proxy.mjs';
+import { bridgedModelRefusal } from '../src/core/executor/gates.mjs';
 import { modelSlot, missingCredentials, describeMissing, workflowNeedsModel } from '../src/core/broker-routing.mjs';
 import { syncPluginSlots } from '../src/core/plugin-broker-slots.mjs';
 import { planClone, cloneProject, CloneError } from '../src/core/clone-project.mjs';
@@ -7755,7 +7762,62 @@ function askAgentRelay({ threadId, reader, web = null, engine = 'claude', model 
   });
   askRelays.set(token, entry);
   const port = server.address()?.port || PORT;
-  return { url: `http://127.0.0.1:${port}/api/ask/relay`, token, dispose: () => { life.abort(); askRelays.delete(token); } };
+  // On a worker the loopback is the worker's relay shim (src/worker/relay-shim.mjs), which forwards each
+  // line over the worker socket to relayAskLine below; locally it is this server's route.
+  const url = isRemoteExecutor() ? `http://127.0.0.1:${WORKER_RELAY_PORT}/api/ask/relay` : `http://127.0.0.1:${port}/api/ask/relay`;
+  return { url, token, dispose: () => { life.abort(); askRelays.delete(token); } };
+}
+
+/**
+ * One JSON-RPC line from a chat turn's MCP child, answered by the turn's worca tools here. The
+ * route POST /api/ask/relay and a worker's `relay` frame both land here.
+ * @returns {Promise<{lines: string[]|null, error: string|null}>}
+ */
+async function relayAskLine(token, line) {
+  const entry = askRelays.get(String(token || ''));
+  if (!entry) return { lines: null, error: 'relay: unknown or finished turn' };
+  if (typeof line !== 'string') return { lines: null, error: 'relay: line is required' };
+  // One line at a time per turn (the child sends sequentially), so the output collected
+  // between feed and idle is this line's answer.
+  await withBillTo(entry.billTo, async () => {
+    entry.out = [];
+    await entry.rpc.feed(line);
+    await entry.rpc.idle();
+  }, { owner: entry.owner });
+  return { lines: entry.out, error: null };
+}
+
+/** The worker registry under a remote executor (src/core/executor), else null. */
+let WORKERS = null;
+
+/**
+ * Install the executor WORCA_EXECUTOR names (docs/workers.md): the backend, the worker listener,
+ * and the registry chat relays reach. Local: nothing to do. A misconfiguration throws with the
+ * reason; the boot refuses on it. Exported for the server's own tests.
+ * @returns {Promise<{kind:string, registry:object|null}>}
+ */
+async function installExecutorFromEnv({ log = (l) => console.log(l), port, host } = {}) {
+  const cfgErr = executorConfigError();
+  if (cfgErr) throw new Error(cfgErr);
+  const kind = executorKind();
+  if (kind === 'local') return { kind, registry: null };
+  const backend = await createBackend(kind, { log: (l) => log(`[worca-ui] executor: ${l}`), homeRoot: worcaHome() });
+  const registry = createWorkerRegistry({
+    backend, log: (l) => log(`[worca-ui] workers: ${l}`), onRelay: (f) => relayAskLine(f.token, f.line),
+    ...(port != null ? { port } : {}), ...(host ? { host } : {}),
+  });
+  await registry.listen();
+  WORKERS = registry;
+  installExecutor({ kind, registry });
+  log(`[worca-ui] executor: ${kind} (${backend.describe?.()?.kind || kind}); workers connect to ${registry.controllerUrl}, up to ${registry.describe().maxWorkers} at once`);
+  if (readEgressPolicy(process.env).enforced) log('[worca-ui] executor: the outbound network policy proxy runs in this process and does not reach workers; use the egress sidecar (docker/compose.egress.yml) or a cluster network policy');
+  return { kind, registry };
+}
+/** What /api/health says about where agents run: null under the local executor. */
+function workersHealth() {
+  if (!WORKERS) return null;
+  const d = WORKERS.describe();
+  return { kind: executorKind(), backend: d.backend?.kind ?? null, workers: d.workers, maxWorkers: d.maxWorkers, port: d.port };
 }
 
 /**
@@ -8616,6 +8678,7 @@ async function deleteAskThreadFully(id) {
       return job;
     };
     stopJob();
+    await releaseWorker({ kind: 'chat', id }, { reason: 'thread deleted' }).catch(() => {});   // its worker container and HOME, if any
     const followers = askFollowers.get(id);
     if (followers) {
       for (const f of [...followers]) {
@@ -8990,6 +9053,9 @@ function askChatEngineGate(id, thread) {
  *  → Promise<null | {status, error, code}>. */
 async function askCredentialGate(req, model) {
   if (mockEnabled({})) return null;
+  // A bridged model cannot be served to a worker container (src/core/executor/gates.mjs).
+  const bridged = bridgedModelRefusal([String(model)]);
+  if (bridged) return { status: 409, error: bridged, code: 'executor-bridged-model' };
   const refusal = await brokerStartRefusal(req, [String(model)]);
   return refusal ? { status: 409, error: refusal, code: 'credential-missing' } : null;
 }
@@ -9222,7 +9288,9 @@ async function startAskTurn({ threadId: id, thread, ctx, model, effort, text, fi
       deps: {
         // Agents under their own users (agent-pool.mjs): the chat runs as the person's agent
         // user and its worca tools run here, through the relay. null = the classic MCP child.
-        agentRelay: agentIdentity() ? (o) => askAgentRelay({ ...o, engine }) : null,
+        // Under a remote executor the chat's engine runs on a worker container, where the worca
+        // tools cannot run: relayed to this process the same way.
+        agentRelay: (agentIdentity() || isRemoteExecutor()) ? (o) => askAgentRelay({ ...o, engine }) : null,
         commandBridge: askCommandBridge,                     // #574: null unless agent mode can work here
         proxyBridge: askProxyBridge,                         // the corporate proxy bridge: null for an agent caller
         onFrame: stampAskFrames(id, job),
@@ -9268,6 +9336,7 @@ async function startAskTurn({ threadId: id, thread, ctx, model, effort, text, fi
   const settleJob = (status) => {
     if (askJobs.get(id) !== job) return;
     job.status = status;
+    touchWorker({ kind: 'chat', id });   // the thread's worker idles out from now, not from the turn's start
     job.graceTimer = setTimeout(() => {
       if (askJobs.get(id) === job) askJobs.delete(id);
     }, ASK_LIMITS.jobGraceMs);
@@ -9279,8 +9348,9 @@ async function startAskTurn({ threadId: id, thread, ctx, model, effort, text, fi
   turn.on('done', () => settleJob('done'));
   turn.on('error', () => settleJob('error'));
   // Fire-and-forget with a backstop (startAgentGen shape) — run() never throws.
+  // The turn's spawns belong to this thread (src/core/executor): on its worker under a remote executor.
   Promise.resolve()
-    .then(() => turn.run())
+    .then(() => withExecutorScope({ kind: 'chat', id }, () => turn.run()))
     .catch((err) => {
       console.error(`[worca-ui] ask turn crashed: ${err && err.message ? err.message : err}`);
       settleJob('error');
@@ -10009,6 +10079,17 @@ export async function bootMaintenance({ log } = {}) {
   }
   summary.agentGroups = await reapAgentGroupsAtBoot({ home: worcaHome });   // #1144: agents a SIGKILLed server/CLI left running
 
+  // Worker containers (docs/workers.md): with one controller, every worker still around at boot
+  // belonged to the previous one. Their HOMEs stay only for runs a resume will continue.
+  if (WORKERS) {
+    try { summary.workers = await WORKERS.reapAtBoot(); } catch (err) { console.error(`[worca-ui] worker reap failed: ${err && err.message ? err.message : err}`); }
+    try {
+      const keep = ({ kind, id }) => kind === 'chat' || ['paused', 'pausing', 'running'].includes(findPipelineRowById(id)?.status);
+      const removed = sweepWorkerHomes({ keep });
+      if (removed.length) console.log(`[worca-ui] removed ${removed.length} worker home(s) of finished runs`);
+    } catch (err) { console.error(`[worca-ui] worker-home sweep failed: ${err && err.message ? err.message : err}`); }
+  }
+
   // Actions (issue #529): reap orphaned action processes, mark interrupted setups, release
   // until-pr checkouts whose PR closed (D11) and apply the checkout cap (D12).
   try {
@@ -10246,6 +10327,16 @@ if (isMain) {
     }
   }
 
+  // Where agents run (docs/workers.md): in this process, or in worker containers a backend starts.
+  // Fails closed: a named executor that cannot be set up never starts serving.
+  try {
+    await installExecutorFromEnv();
+  } catch (err) {
+    console.error(`[worca-ui] executor: ${err && err.message ? err.message : err}`);
+    console.error('[worca-ui] not starting. See docs/workers.md.');
+    process.exit(78);
+  }
+
   // The git answer resolved at import (the `await gitState()` after preflightDeps), logged once at boot.
   {
     const g = currentGitState();
@@ -10312,7 +10403,7 @@ if (isMain) {
     }, drainTimeoutMs() + SHUTDOWN_STEPS_MS + 5_000);
     // B2: pause the active runs first (bounded), so they come back paused with a resume point.
     drainServer({ reason: signal })
-      .then(() => settleShutdownSteps({ chat: () => channelHost.stop(), actions: () => actions.stopAll(), terminals: () => terminals.closeAll(), prWatch: () => prWatcher.runner.stop(), automations: () => automations.runner.stop() }))
+      .then(() => settleShutdownSteps({ chat: () => channelHost.stop(), actions: () => actions.stopAll(), terminals: () => terminals.closeAll(), prWatch: () => prWatcher.runner.stop(), automations: () => automations.runner.stop(), workers: () => (WORKERS ? WORKERS.closeAll('shutdown') : undefined) }))
       .finally(() => { clearTimeout(hardExit); keepAwake.stop(); process.exit(exitCodeFor(signal)); });
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
@@ -10405,7 +10496,7 @@ if (isMain) {
 }
 
 export { app, server, runs };
-export { AGENTS_DIR, APP_INFO, APP_REPO_URL, ASK_DEFERRED_REPLIES_MAX, ASK_SCOPE_BUSY, ASK_TEXT_PREVIEW_MAX, BRANCH_SETTLED, BUGS_SLUG, CLONE_JOBS, HOST, MARKETPLACE_ID_RE, MARKET_JOBS, NO_PR_HOST, PKG_VERSION, PLAN_TEXT_MAX, PLUGIN_NAME_RE, PORT, PROJECT_ROOT, PR_TITLE_MAX, REMOTE_MODE, RUNNING_VERSION, ResumeError, SETTLED_RUN, SETUP_AGENT_TEXT, SETUP_JOBS, SKILLS_DIR, SKILL_FOLDER_IMPORTS, SKILL_MD_UNREACHABLE, STORE_ERROR_CODES, actions, actionsEnabledHere, activeActionSnaps, adoWebhookSecret, afterMembersChanged, afterProjectRegistered, agentErrorStatus, agentMayBeCaller, answerRun, applyProjectSettingsPatch, applySettingsPatch, askBusyReason, askChatActions, askChatEngine, askChatEngineGate, askCommandBridges, askCommands, askCommandsEnabled, askContextTokens, askCredentialGate, askDeferred, askDeferredReplies, askDeleting, askEngineSwitchText, askEventPick, askFilesRunDir, askFilesStoreDir, askFollowers, askGroupFor, askGroupThreads, askIdParam, askInFlight, askLiveRun, askProxyBridges, askRefResolver, askRelays, askRunFromPipelineRow, askRunningCount, askSignedIn, askSwitchTranscript, askThreadVisible, askTrackingCount, askTurnEngine, askValidateScope, askViewer, askWebAccessFor, askWorktreesEnvelope, autoDetectedBuiltins, automationWorkspaceMembers, automations, awayPersonOf, badRequest, bareWorkspaceKey, bearerMatches, broadcast, broadcastFeature, brokerStartRefusal, builtins, busyActionRunIds, channelHost, chatGroupError, chatNotifier, chatRefusals, checkoutRecOf, commentIdParam, commentsCreate, commentsDelete, commentsFail, commentsList, commentsPatch, commentsReply, createRunPr, crosslinkMemberPrs, currentUpdateEligibility, defaultPrRemotes, deleteAskThreadFully, detectSystemProxyImpl, detectTeamMemorySoon, drainServer, effectiveUiLevel, egressNow, emitAskWorktrees, emitChanged, emitMemoryChanged, emitPluginsChanged, ensureSetup, extensionPairing, factDeps, failedEventTurn, featureShipping, findScheduleItem, findShipCardIn, flipCard, followCloneCard, forkPrRefusal, fsAllowedRoots, fsLimitedHere, gitMissing, isFinishingRun, isFreshInstall, isLiveRun, isPlainObject, isPrStoreKey, isTruthy, kickAutomations, kickPrWatch, labelsOn, lastUpdateResult, liveAutoRescan, liveDefragRun, liveDiffOf, livePr, liveProbe, liveRunEntry, liveRunIds, liveSliceOf, marketJobFailure, mcpRunPreview, mcpTargetOf, memberFor, memoryError, modelTestsInFlight, namingBucket, namingCatalog, namingOn, namingPick, noRawCommand, notifReader, openMemberPr, ownsWorkspaceTarget, parseMcpOptOut, pauseRun, pickPrRemotes, pinUiLevel, postAskSystemNotice, postDirection, prTargetFor, prWatchFrame, prWatcher, presetCheckCtx, presetScopeOf, primaryMemberOf, projectAutomationRepo, projectDirForKey, projectSettingsState, proxyHost, pruneMarketJobs, prunedNote, publicCloneJob, readInstalledManifest, refuseAgentCaller, refuseSignedOutClaude, registeredProjectForDir, rejectRawTerminalFields, removeRecommendation, requireActions, requireFsAllowed, requireTerminal, resolvePrPipeline, resolveProjectDir, resolveRunScope, resumeEngineOpts, resumeRun, resumeTargetDirs, runGroupIds, runSourceIssue, scanModelsFor, scanRequest, scheduleVerb, sendArtifactRaw, sendCheckoutError, sendMetricsError, sendPolicyError, sendPresetError, serveAskFile, serverMockMode, settleShipped, setupJobs, setupProbesOverride, shipChainNow, shipCtxOf, shipFeatureNow, skillRunPreview, snapshotFor, sockets, stackStates, stackTokens, startAgentGen, startAskTurn, startCloneJob, startMetricsEventTurn, startOrQueue, startRunAs, startRunHandler, startScopeEventTurn, startScriptBench, stopCheckoutServices, stopMemberServices, stopPausedPipeline, stopRun, switchThreadScope, syncMode, syncProjectAction, syncRoute, teamOriginOk, teamWarn, terminalCallerOk, terminalEnabledHere, terminalError, terminalSameOrigin, terminals, tmProject, uiControl, unsyncableBlock, updateChecker, updatePort, updatePreview, validateResumeTarget, versionLister, versionPayload, webhookSecret, withAfter, workspaceMembersBusy };
+export { AGENTS_DIR, APP_INFO, APP_REPO_URL, ASK_DEFERRED_REPLIES_MAX, ASK_SCOPE_BUSY, ASK_TEXT_PREVIEW_MAX, BRANCH_SETTLED, BUGS_SLUG, CLONE_JOBS, HOST, MARKETPLACE_ID_RE, MARKET_JOBS, NO_PR_HOST, PKG_VERSION, PLAN_TEXT_MAX, PLUGIN_NAME_RE, PORT, PROJECT_ROOT, PR_TITLE_MAX, REMOTE_MODE, RUNNING_VERSION, ResumeError, SETTLED_RUN, SETUP_AGENT_TEXT, SETUP_JOBS, SKILLS_DIR, SKILL_FOLDER_IMPORTS, SKILL_MD_UNREACHABLE, STORE_ERROR_CODES, actions, actionsEnabledHere, activeActionSnaps, adoWebhookSecret, afterMembersChanged, afterProjectRegistered, agentErrorStatus, agentMayBeCaller, answerRun, applyProjectSettingsPatch, applySettingsPatch, askBusyReason, askChatActions, askChatEngine, askChatEngineGate, askCommandBridges, askCommands, askCommandsEnabled, askContextTokens, askCredentialGate, askDeferred, askDeferredReplies, askDeleting, askEngineSwitchText, askEventPick, askFilesRunDir, askFilesStoreDir, askFollowers, askGroupFor, askGroupThreads, askIdParam, askInFlight, askLiveRun, askProxyBridges, askRefResolver, askRelays, askRunFromPipelineRow, askRunningCount, askSignedIn, askSwitchTranscript, askThreadVisible, askTrackingCount, askTurnEngine, askValidateScope, askViewer, askWebAccessFor, askWorktreesEnvelope, autoDetectedBuiltins, automationWorkspaceMembers, automations, awayPersonOf, badRequest, bareWorkspaceKey, bearerMatches, broadcast, broadcastFeature, brokerStartRefusal, builtins, busyActionRunIds, channelHost, chatGroupError, chatNotifier, chatRefusals, checkoutRecOf, commentIdParam, commentsCreate, commentsDelete, commentsFail, commentsList, commentsPatch, commentsReply, createRunPr, crosslinkMemberPrs, currentUpdateEligibility, defaultPrRemotes, deleteAskThreadFully, detectSystemProxyImpl, detectTeamMemorySoon, drainServer, effectiveUiLevel, egressNow, emitAskWorktrees, emitChanged, emitMemoryChanged, emitPluginsChanged, ensureSetup, extensionPairing, factDeps, failedEventTurn, featureShipping, findScheduleItem, findShipCardIn, flipCard, followCloneCard, forkPrRefusal, fsAllowedRoots, fsLimitedHere, gitMissing, isFinishingRun, isFreshInstall, isLiveRun, isPlainObject, isPrStoreKey, isTruthy, kickAutomations, kickPrWatch, labelsOn, lastUpdateResult, liveAutoRescan, liveDefragRun, liveDiffOf, livePr, liveProbe, liveRunEntry, liveRunIds, liveSliceOf, marketJobFailure, mcpRunPreview, mcpTargetOf, memberFor, memoryError, modelTestsInFlight, namingBucket, namingCatalog, namingOn, namingPick, noRawCommand, notifReader, openMemberPr, ownsWorkspaceTarget, parseMcpOptOut, pauseRun, pickPrRemotes, pinUiLevel, postAskSystemNotice, postDirection, prTargetFor, prWatchFrame, prWatcher, presetCheckCtx, presetScopeOf, primaryMemberOf, projectAutomationRepo, projectDirForKey, projectSettingsState, proxyHost, pruneMarketJobs, prunedNote, publicCloneJob, readInstalledManifest, refuseAgentCaller, refuseSignedOutClaude, registeredProjectForDir, rejectRawTerminalFields, removeRecommendation, requireActions, requireFsAllowed, requireTerminal, resolvePrPipeline, resolveProjectDir, resolveRunScope, resumeEngineOpts, resumeRun, resumeTargetDirs, runGroupIds, runSourceIssue, scanModelsFor, scanRequest, scheduleVerb, sendArtifactRaw, sendCheckoutError, sendMetricsError, sendPolicyError, sendPresetError, serveAskFile, serverMockMode, settleShipped, setupJobs, setupProbesOverride, shipChainNow, shipCtxOf, shipFeatureNow, skillRunPreview, snapshotFor, sockets, stackStates, stackTokens, startAgentGen, startAskTurn, startCloneJob, startMetricsEventTurn, startOrQueue, startRunAs, startRunHandler, startScopeEventTurn, startScriptBench, stopCheckoutServices, stopMemberServices, stopPausedPipeline, stopRun, switchThreadScope, syncMode, syncProjectAction, syncRoute, teamOriginOk, teamWarn, terminalCallerOk, terminalEnabledHere, terminalError, terminalSameOrigin, terminals, tmProject, uiControl, unsyncableBlock, updateChecker, updatePort, updatePreview, validateResumeTarget, versionLister, versionPayload, webhookSecret, withAfter, workspaceMembersBusy, workersHealth, relayAskLine, installExecutorFromEnv };
 export const _testing = {
   chatBridge, invokeAskCard, askBus, chatAgentModeFor, chatTurnIdentity,
   updateChecker,

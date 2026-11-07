@@ -107,6 +107,9 @@ import { isNormalized } from './engines/events.mjs';
 import { createClaudeNormalizer } from './engines/claude-events.mjs';
 import { cachedFreeDailyCounts } from './openrouter-free.mjs';
 import { withBillTo, currentBillTo } from './billing.mjs';
+import { withExecutorScope } from './executor/scope.mjs';
+import { releaseWorker } from './executor/index.mjs';
+import { bridgedModelRefusal } from './executor/gates.mjs';
 import { claimRunDir, claimRunExtras, shareFailureReason } from './agent-pool.mjs';
 import { brokerEnabled, brokerEngineRefusal, brokerInfo, personSlots } from './broker-client.mjs';
 import { mockEnabled } from './claude-runner.mjs';
@@ -1496,7 +1499,27 @@ export class RunHarness extends EventEmitter {
    * credential broker): the whole loop runs inside that async context.
    */
   run() {
-    return withBillTo(this.opts.startedBy || currentBillTo(), () => this._run());
+    return withBillTo(this.opts.startedBy || currentBillTo(), () => withExecutorScope(this._executorScope, () => this._run()));
+  }
+
+  /**
+   * The executor scope of this run (src/core/executor): every spawn inside the loop belongs to
+   * the run, so under a remote executor it goes to the run's worker. Evaluated per spawn — the
+   * id exists once createPipeline has run, which is before the first agent or script spawns.
+   */
+  _executorScope = () => (this.pipeline?.id ? { kind: 'run', id: this.pipeline.id } : null);
+
+  /**
+   * Release the run's worker (no-op under the local executor). The worker's HOME on the shared
+   * volume — where the engine keeps the run's sessions — stays across a pause so a resume on a
+   * fresh worker can `--resume` them; it goes with every other end.
+   */
+  async _releaseWorker() {
+    const id = this.pipeline?.id;
+    if (!id) return;
+    const paused = this.state.status === 'paused' || this.state.status === 'pausing';
+    try { await releaseWorker({ kind: 'run', id }, { reason: this.state.status, keepHome: paused }); }
+    catch (err) { try { this._log('executor', 'warn', `worker release: ${err?.message || err}`); } catch { /* best effort */ } }
   }
 
   async _run() {
@@ -1545,6 +1568,7 @@ export class RunHarness extends EventEmitter {
       // Credential broker: every model this run will spawn needs its person's key; refuse
       // NOW, naming what's missing, instead of pausing mid-run at the first node that needs it.
       await this._brokerPreflight(topology.manifest, stepModels);
+      this._remoteExecutorPreflight(topology.manifest, stepModels);
       await this._resolveGuardrails();
       await this._resolvePolicy();
       this._noteLocalTagDimensions();
@@ -1907,6 +1931,7 @@ export class RunHarness extends EventEmitter {
     } finally {
       this._stopHeartbeat(); // clear timer + NULL owner columns (done/stopped/launch-error/paused)
       this._runSlot?.release(); this._runSlot = null;   // a paused run waits for a slot again on resume
+      await this._releaseWorker();    // the run's worker container (src/core/executor); a no-op locally
       await this._stopGraphBuild();   // before teardown removes the checkout it writes into (a resume rebuilds or reuses it)
       // C1: tear the run root + worktree(s) down on done/stopped/launch-error — the branch is
       // kept (except a workspace member's branch this run never changed, and every branch of
@@ -1938,7 +1963,7 @@ export class RunHarness extends EventEmitter {
     // B4: the person who resumed it owns it for Away mode from now on (only with per-person Away).
     if (this._night && awayPerPerson() && awayPersonKey(who)) this._night.owner = who;
     // Pays: whoever resumed. Runs as: the starter's agent user, whose HOME holds the sessions.
-    return withBillTo(who && who !== 'local' ? who : (starter || who), () => this._resume(), { owner: starter || who });
+    return withBillTo(who && who !== 'local' ? who : (starter || who), () => withExecutorScope(this._executorScope, () => this._resume()), { owner: starter || who });
   }
 
   async _resume() {
@@ -2235,6 +2260,7 @@ export class RunHarness extends EventEmitter {
     } finally {
       this._stopHeartbeat(); // clear timer + NULL owner columns (done/stopped/launch-error/paused)
       this._runSlot?.release(); this._runSlot = null;   // a paused run waits for a slot again on resume
+      await this._releaseWorker();    // the run's worker container (src/core/executor); a no-op locally
       await this._stopGraphBuild();   // before teardown removes the checkout it writes into (a resume rebuilds or reuses it)
       // Same teardown as run()'s finally — wiring only run()'s would keep legacy
       // teardown on every detached run that finishes after a resume (including every
@@ -2478,7 +2504,7 @@ export class RunHarness extends EventEmitter {
     const starter = this.resumeOpts?.row?.started_by ?? this.opts.startedBy ?? null;
     // resume()'s identities: billed to whoever asked, else the starter. A stop spawns no agent, so
     // the owner never picks an OS user here: the teardown's git runs as this process.
-    return withBillTo(who && who !== 'local' ? who : (starter || who), () => this._stopPaused(by), { owner: starter || who });
+    return withBillTo(who && who !== 'local' ? who : (starter || who), () => withExecutorScope(this._executorScope, () => this._stopPaused(by)), { owner: starter || who });
   }
 
   async _stopPaused(by) {
@@ -6007,6 +6033,19 @@ export class RunHarness extends EventEmitter {
     if (r.missing.length || r.errors.length) {
       throw Object.assign(new Error(`Preflight failed: ${describeMissing(r, info.publicUrl)}`), { errorClass: 'auth' });
     }
+  }
+
+  /**
+   * Under a remote executor (docs/workers.md) a bridged model cannot be served to a worker
+   * container: refused before anything starts, as a pause the person resumes with another model.
+   */
+  _remoteExecutorPreflight(manifest, stepModels) {
+    if (mockEnabled({ mock: this.claude.mock })) return;
+    const models = manifestModels(manifest);
+    for (const m of Object.values(stepModels || {})) if (typeof m === 'string' && m.trim()) models.add(m.trim());
+    if (this.claude?.model) models.add(this.claude.model);
+    const refusal = bridgedModelRefusal([...models]);
+    if (refusal) throw Object.assign(new Error(`Preflight failed: ${refusal}`), { errorClass: 'auth' });
   }
 
   _preflightAgentKeys(agentKeys) {

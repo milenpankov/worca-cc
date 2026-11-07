@@ -32,13 +32,20 @@ export function parseScopeKey(key) {
   return normalizeScope({ kind: key.slice(0, i), id: key.slice(i + 1) });
 }
 
-/** Run `fn` with `scope` as the current executor scope (an unusable scope leaves it unset). */
+/**
+ * Run `fn` with `scope` as the current executor scope. `scope` may be a function: it is
+ * evaluated at each spawn, for a run whose id is minted a little after its loop starts (a
+ * spawn before it exists is unscoped and stays local). An unusable scope leaves the context unset.
+ */
 export function withExecutorScope(scope, fn) {
+  if (typeof scope === 'function') return als.run(scope, fn);
   const s = normalizeScope(scope);
   return s ? als.run(s, fn) : fn();
 }
 
 /** The executor scope of this async context, or null. */
 export function currentExecutorScope() {
-  return als.getStore() ?? null;
+  const s = als.getStore();
+  if (typeof s === 'function') { try { return normalizeScope(s()); } catch { return null; } }
+  return s ?? null;
 }

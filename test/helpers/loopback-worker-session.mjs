@@ -59,16 +59,23 @@ export function createLoopbackSession({ workerId = 'w-loopback' } = {}) {
   return session;
 }
 
-/** A registry whose acquire hands out one loopback session (or rejects), recording the scopes asked for. */
+/** A registry whose acquire hands out one loopback session (or rejects), recording the scopes asked for,
+ *  the releases and the touches. */
 export function createLoopbackRegistry({ session = createLoopbackSession(), fail = null } = {}) {
   const acquired = [];
+  const released = [];
+  const touched = [];
   return {
     session,
     acquired,
+    released,
+    touched,
     async acquire(scope) {
       acquired.push(scope);
       if (fail) throw fail;
       return session;
     },
+    async release(scope, { reason } = {}) { released.push({ scope, reason }); return acquired.length > 0; },
+    touch(scope) { touched.push(scope); },
   };
 }

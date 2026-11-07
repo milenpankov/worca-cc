@@ -20,7 +20,7 @@ const CONNECT_TIMEOUT_MS = 15_000;
  *   capabilities: object, idleMs?: number|null, pingMs?: number, log?: (msg:string) => void,
  *   onRelayResult?: (frame: object) => void }} o
  */
-export function startWorker({ url, token, scope, workerId, home, capabilities, idleMs = null, pingMs = DEFAULT_PING_MS, log = () => {}, onRelayResult = null }) {
+export function startWorker({ url, token, scope, workerId, home, capabilities, idleMs = null, pingMs = DEFAULT_PING_MS, log = () => {} }) {
   const base = String(url).replace(/\/+$/, '');
   const target = base.endsWith(WORKER_WS_PATH) ? base : base + WORKER_WS_PATH;
   let resolveDone;
@@ -36,12 +36,23 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
   const ws = new WebSocket(target, { headers: { authorization: `Bearer ${token}` }, handshakeTimeout: CONNECT_TIMEOUT_MS, maxPayload: 8 * 1024 * 1024 + 1024 });
   const send = (frame) => { if (ws.readyState === WebSocket.OPEN) ws.send(encodeFrame(frame)); };
   const runner = createExecRunner({ send, home, log });
+  // Relay (relay-shim.mjs): a chat's worca tools run on the controller; each JSON-RPC line goes up as a
+  // `relay` frame and its answer comes back as `relay-result`.
+  const relays = new Map();   // id -> { resolve }
+  let relaySeq = 0;
+  const relay = (relayToken, line) => new Promise((resolve) => {
+    const id = `r${++relaySeq}`;
+    if (ws.readyState !== WebSocket.OPEN) return resolve({ lines: null, error: 'worker is not connected' });
+    relays.set(id, { resolve });
+    send({ type: 'relay', id, token: relayToken, line });
+  });
 
   const finish = (code, why) => {
     if (finished) return;
     finished = true;
     exitCode = code;
     clearTimeout(idleTimer); clearInterval(pingTimer);
+    for (const [id, r] of relays) { relays.delete(id); r.resolve({ lines: null, error: `worker done: ${why}` }); }
     runner.killAll();
     log(`worker ${workerId} done: ${why}`);
     try { ws.terminate(); } catch { /* gone */ }
@@ -97,7 +108,7 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
       case 'ping': send({ type: 'pong', id: frame.id }); return;
       case 'pong': missed = 0; return;
       case 'shutdown': leave(frame.graceMs ?? 5000); return;
-      case 'relay-result': onRelayResult?.(frame); return;
+      case 'relay-result': { const r = relays.get(frame.id); if (r) { relays.delete(frame.id); r.resolve({ lines: frame.lines ?? null, error: frame.error ?? null }); } return; }
       default: return;
     }
   });
@@ -110,6 +121,7 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
     get exitCode() { return exitCode; },
     get liveCount() { return runner.liveCount; },
     send,
+    relay,
     /** Removed from outside before it left on its own: not a clean exit. */
     close: (why = 'closed') => finish(1, why),
     leave,

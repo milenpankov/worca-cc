@@ -11,8 +11,9 @@
 // unchanged. See docs/workers.md.
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { readdirSync, rmSync } from 'node:fs';
 import { worcaHome } from '../projects.mjs';
-import { currentExecutorScope } from './scope.mjs';
+import { currentExecutorScope, normalizeScope } from './scope.mjs';
 
 export const EXECUTOR_KINDS = Object.freeze(['local', 'docker', 'kubernetes']);
 
@@ -74,4 +75,51 @@ export function spawnsRemotely() {
  */
 export function stagingBase() {
   return installed ? join(worcaHome(), 'tmp', 'stage') : tmpdir();
+}
+
+/** The HOME a scope's worker runs its children with: on the shared volume, so a replacement worker
+ *  (after a pause, a lost container) finds the engine's sessions where the previous one left them. */
+export function workerHomeDir(scope, home = worcaHome()) {
+  const s = normalizeScope(scope);
+  return s ? join(home, 'worker-homes', s.kind, s.id) : null;
+}
+
+/** Remove a scope's worker HOME. Best effort; never throws. */
+export function removeWorkerHome(scope, home = worcaHome()) {
+  const dir = workerHomeDir(scope, home);
+  if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } }
+}
+
+/**
+ * Release a scope's worker and, unless `keepHome`, its HOME. A no-op under the local executor,
+ * so the harness and the chat code call it unconditionally.
+ */
+export async function releaseWorker(scope, { reason = 'released', keepHome = false, graceMs } = {}) {
+  if (!installed) return false;
+  const released = await installed.registry.release(scope, { reason, ...(graceMs != null ? { graceMs } : {}) });
+  if (!keepHome) removeWorkerHome(scope);
+  return released;
+}
+
+/** Keep a scope's worker from idling out (a chat turn just ran). A no-op under the local executor. */
+export function touchWorker(scope) {
+  installed?.registry.touch?.(scope);
+}
+
+/**
+ * The worker-homes that no longer belong to a live or paused run: removed. `keep` says which ids
+ * stay (paused runs, whose sessions a resume needs). Returns the ids removed.
+ */
+export function sweepWorkerHomes({ keep = () => false, home = worcaHome() } = {}) {
+  const removed = [];
+  for (const kind of ['run', 'chat']) {
+    const dir = join(home, 'worker-homes', kind);
+    let names = [];
+    try { names = readdirSync(dir); } catch { continue; }
+    for (const id of names) {
+      if (keep({ kind, id })) continue;
+      try { rmSync(join(dir, id), { recursive: true, force: true }); removed.push(`${kind}:${id}`); } catch { /* next boot */ }
+    }
+  }
+  return removed;
 }
