@@ -442,8 +442,10 @@ jobs:
             type=gha,scope=ci-slim
           cache-to: type=gha,scope=ci-worker-claude,mode=max
 
-      - name: Worker contract smoke
-        run: node tools/docker-smoke.mjs --worker-image ghcr.io/sinishadjukic/worca-worker:ci
+      - name: Worker contract smoke + controller/worker end to end
+        # Both images: the worker's contract, then the controller under WORCA_EXECUTOR=docker
+        # running a mock script node on a worker container it starts and removes.
+        run: node tools/docker-smoke.mjs --image ghcr.io/sinishadjukic/worca:ci --worker-image ghcr.io/sinishadjukic/worca-worker:ci
 
       # Blocking: the Debian layer we ship. Node/npm library findings inside the
       # base image (e.g. node-tar under the bundled npm) are the node image's to

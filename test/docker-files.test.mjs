@@ -197,7 +197,7 @@ test('engines: engines.env pins every engine but claude, install.sh has an arm p
       const ci = read('.github/workflows/ci.yml');
       assert.match(ci, /target: worker\n\s+load: true\n\s+tags: ghcr\.io\/sinishadjukic\/worca-worker:ci/);
       assert.match(ci, /ENGINE=claude/);
-      assert.match(ci, /node tools\/docker-smoke\.mjs --worker-image ghcr\.io\/sinishadjukic\/worca-worker:ci/);
+      assert.match(ci, /node tools\/docker-smoke\.mjs --image ghcr\.io\/sinishadjukic\/worca:ci --worker-image ghcr\.io\/sinishadjukic\/worca-worker:ci/, 'the PR job smokes the controller and the worker together (the end-to-end step)');
     } },
   ]);
 });

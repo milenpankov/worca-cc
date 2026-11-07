@@ -289,7 +289,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Mock-mode smoke against the pushed controller manifest
         run: node tools/docker-smoke.mjs --image "$IMAGE:${{ needs.build.outputs.version }}"
-      - name: Worker contract against the pushed claude worker manifest
-        # Skipped when `engines` left claude out.
+      - name: Worker contract + controller/worker end to end against the pushed manifests
+        # Skipped when `engines` left claude out. With both images the smoke also runs a mock script
+        # node on a worker container the controller starts (docs/workers.md).
         if: inputs.engines == '' || contains(format(',{0},', inputs.engines), ',claude,')
-        run: node tools/docker-smoke.mjs --worker-image "$IMAGE_WORKER:${{ needs.build.outputs.version }}-claude"
+        run: node tools/docker-smoke.mjs --image "$IMAGE:${{ needs.build.outputs.version }}" --worker-image "$IMAGE_WORKER:${{ needs.build.outputs.version }}-claude"
