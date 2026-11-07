@@ -256,6 +256,17 @@ Egress allowlist](docker.md#egress-allowlist)), not a replacement for it.
 | Agents cannot reach GitHub | `networkPolicy.workerEgressExceptCidrs` covers your Git host, or a corporate proxy needs `HTTPS_PROXY` in `worker.env` and `controller.env` | Adjust the CIDRs; add the proxy and `controller.extraNoProxy` |
 | `helm template` fails: *storage.db.accessModes must be [ReadWriteOnce]* | Someone put SQLite on the shared class | Keep the DB claim RWO |
 
+## Smoke it
+
+`node tools/k8s-smoke.mjs` does the first four checks below on its own: it builds `worca:local` and
+`worca-worker:local-claude` (`--no-build` reuses them), creates a kind cluster (`--context <name>`
+uses a cluster you already have instead), loads the images, installs the chart with
+`values-kind.yaml`, and runs a mock workflow whose shell script node executes on a worker pod the
+controller creates — asserting the run ends `done`, the controller log names the pod, the script's
+output carries the pod's hostname, no worker pod is left, and `helm test` passes. `--keep` leaves
+the cluster and the release for a look. In CI it is the on-demand *Kubernetes end to end (kind)*
+job (Actions → CI → Run workflow).
+
 ## Check it
 
 - [ ] `helm test worca -n worca` passes (the UI answers `/api/health` with `Host: localhost`).

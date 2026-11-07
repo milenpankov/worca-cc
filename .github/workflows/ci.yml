@@ -26,6 +26,8 @@ on:
     paths:
       - "**"
       - "!docs/**"
+  # On demand: the Kubernetes end-to-end job (k8s-smoke) runs only from here.
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -479,6 +481,29 @@ jobs:
   # (test/helm-chart.test.mjs: contracts the executor backend relies on, golden files). Always
   # on a push to dev; on a pull request only when the chart, its test or its fixtures changed
   # (`changes` above). The same !cancelled() / != 'false' shape as the slow tier.
+  # The controller/worker topology end to end on a kind cluster (tools/k8s-smoke.mjs): builds both
+  # images, installs the chart with values-kind.yaml and runs a mock script node on a worker pod.
+  # Ten-plus minutes, so on demand only (Actions -> CI -> Run workflow), not on every PR; the
+  # chart itself is linted and rendered by the `helm` job on every change.
+  k8s-smoke:
+    name: Kubernetes end to end (kind)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version-file: .nvmrc, cache: npm }
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.17.2
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          cluster_name: worca-smoke
+      - run: npm ci --ignore-scripts
+      - name: Build the images, install the chart, run a script node on a worker pod
+        run: node tools/k8s-smoke.mjs --cluster worca-smoke
+
   helm:
     name: Helm chart
     needs: changes
