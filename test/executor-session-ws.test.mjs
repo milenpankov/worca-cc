@@ -1,0 +1,222 @@
+// test/executor-session-ws.test.mjs — the worker registry and a worker over a real local
+// WebSocket: token handshake, exec through the supervisor seam, flow control, signals,
+// release, idle reclaim, loss, and boot-time reaping. The worker runs in this process
+// (backends/in-process.mjs); its children are real.
+import { test, after, afterEach, before } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { WebSocket } from 'ws';
+import { useTempHome } from './helpers/temp-home.mjs';
+import { createWorkerRegistry } from '../src/core/executor/registry.mjs';
+import { createInProcessBackend } from '../src/core/executor/backends/in-process.mjs';
+import { installExecutor } from '../src/core/executor/index.mjs';
+import { withExecutorScope } from '../src/core/executor/scope.mjs';
+import { superviseSpawn } from '../src/core/engines/spawn.mjs';
+import { encodeFrame, PROTOCOL_VERSION } from '../src/core/executor/protocol.mjs';
+import { startWorker } from '../src/worker/client.mjs';
+import { worcaHome } from '../src/core/projects.mjs';
+
+const home = useTempHome(after);
+const POSIX = process.platform === 'win32' ? { skip: 'POSIX shell fixtures' } : {};
+const dirs = [];
+const tmp = () => { const d = mkdtempSync(join(tmpdir(), 'worca-ws-')); dirs.push(d); return d; };
+after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+function script(body) { const f = join(tmp(), 'bin.sh'); writeFileSync(f, `#!/bin/sh\n${body}\n`); chmodSync(f, 0o755); return f; }
+const base = (over = {}) => ({
+  displayBin: 'fake', cwd: tmpdir(), env: { PATH: process.env.PATH }, stdin: null, signal: undefined, asAgent: false,
+  stagedDir: null, cleanup: () => {}, onEvent: () => {}, onStdoutLine: () => {}, stdoutErrorDetail: () => '', classify: () => null,
+  spawnError: (err, prefix) => Object.assign(new Error(`${prefix}: ${err.message}`), err.code ? { code: err.code } : {}),
+  onDone: (code) => ({ code }), ...over,
+});
+const RUN = { kind: 'run', id: 'r-ws' };
+const CHAT = { kind: 'chat', id: 't-ws' };
+const CAPS = { engines: { claude: null }, platform: process.platform, node: process.version, user: null };
+
+let registry; let backend; const logs = [];
+before(async () => {
+  backend = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS, log: (m) => logs.push(m) });
+  registry = createWorkerRegistry({ backend, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, chatIdleMs: 300, pingMs: 200, log: (m) => logs.push(m) });
+  await registry.listen();
+  installExecutor({ kind: 'docker', registry });
+});
+after(async () => { installExecutor(null); await registry.closeAll('test over'); });
+afterEach(async () => { await registry.release(RUN, { reason: 'test' }); await registry.release(CHAT, { reason: 'test' }); });
+
+const inRun = (fn) => withExecutorScope(RUN, fn);
+
+test('acquire starts a worker that connects with its token; the same scope reuses it', async () => {
+  const s1 = await registry.acquire(RUN);
+  assert.equal(s1.scope.kind, 'run');
+  assert.deepEqual(s1.capabilities, CAPS);
+  assert.ok(s1.pid > 0);
+  const s2 = await registry.acquire(RUN);
+  assert.equal(s2, s1, 'one worker per scope');
+  assert.equal(backend.started.length, 1);
+  assert.deepEqual(registry.snapshot().map((e) => [e.scope.id, e.state, e.liveExecs]), [['r-ws', 'ready', 0]]);
+  assert.match(registry.controllerUrl, /^ws:\/\/127\.0\.0\.1:\d+$/);
+});
+
+test('a spawn inside the scope runs on the worker: lines, stdin, exit code, HOME and the host-guard pid are the worker\'s', POSIX, async () => {
+  const seen = [];
+  const r = await inRun(() => superviseSpawn(base({ file: script('read x; echo "in:$x"; echo "home:$HOME"; echo "pid:$WORCA_HOST_PID"; echo "tok:${WORCA_WORKER_TOKEN:-none}"; echo e 1>&2; exit 0'), args: [], stdin: 'hi', env: { PATH: process.env.PATH, WORCA_WORKER_TOKEN: 'leak?' }, onStdoutLine: (l) => seen.push(l) })));
+  assert.deepEqual(r, { code: 0 });
+  const expectHome = join(worcaHome(), 'worker-homes', 'run', 'r-ws');
+  assert.deepEqual(seen, ['in:hi', `home:${expectHome}`, `pid:${process.pid}`, 'tok:none']);
+  assert.ok(seen[1].startsWith(`home:${home}`));
+});
+
+test('ten thousand lines arrive complete and in order through the send window', POSIX, async () => {
+  const seen = [];
+  const r = await inRun(() => superviseSpawn(base({ file: script('i=0; while [ $i -lt 10000 ]; do echo "line $i"; i=$((i+1)); done'), args: [], onStdoutLine: (l) => seen.push(l) })));
+  assert.deepEqual(r, { code: 0 });
+  assert.equal(seen.length, 10000);
+  assert.equal(seen[0], 'line 0');
+  assert.equal(seen[9999], 'line 9999');
+  assert.ok(seen.every((l, i) => l === `line ${i}`), 'in order');
+});
+
+test('two execs on one worker run concurrently', POSIX, async () => {
+  const t0 = Date.now();
+  const [a, b] = await inRun(() => Promise.all([
+    superviseSpawn(base({ file: script('sleep 0.4; echo a'), args: [] })),
+    superviseSpawn(base({ file: script('sleep 0.4; echo b'), args: [] })),
+  ]));
+  assert.deepEqual([a, b], [{ code: 0 }, { code: 0 }]);
+  assert.ok(Date.now() - t0 < 1500, 'not serialized');
+});
+
+test('a fatal stdout line escalates SIGTERM -> SIGKILL on the worker; the exit carries the signal', POSIX, async () => {
+  const fatal = new Error('stop');
+  const prev = process.env.WORCA_SIGKILL_GRACE_MS;
+  process.env.WORCA_SIGKILL_GRACE_MS = '100';
+  try {
+    const t0 = Date.now();
+    const err = await inRun(() => superviseSpawn(base({ file: script("trap '' TERM; echo go; exec sleep 30"), args: [], onStdoutLine: (l) => (l === 'go' ? fatal : undefined) }))).then(() => null, (e) => e);
+    assert.equal(err, fatal);
+    assert.ok(Date.now() - t0 < 5000);
+  } finally { if (prev === undefined) delete process.env.WORCA_SIGKILL_GRACE_MS; else process.env.WORCA_SIGKILL_GRACE_MS = prev; }
+});
+
+test('release sends shutdown: the worker ends its children, says bye and exits 0; the backend removes it', POSIX, async () => {
+  const s = await registry.acquire(RUN);
+  const p = inRun(() => superviseSpawn(base({ file: script('echo up; sleep 30'), args: [] }))).then(() => null, (e) => e);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(s.liveExecCount, 1);
+  await registry.release(RUN, { reason: 'done', graceMs: 300 });
+  const handle = backend.started.at(-1);
+  assert.equal(await handle.done, 0, 'the worker chose to leave');
+  assert.equal(s.closed, true);
+  assert.equal(s.closeReason, 'bye');
+  const err = await p;
+  assert.ok(err, 'the in-flight spawn failed');
+  assert.deepEqual(registry.snapshot(), []);
+  assert.deepEqual(await backend.listWorkers(), []);
+});
+
+test('a chat worker is reclaimed after the idle timeout; the next turn gets a fresh one', async () => {
+  const s = await registry.acquire(CHAT);
+  await withExecutorScope(CHAT, () => superviseSpawn(base({ file: 'true', args: [] })));
+  await new Promise((r) => setTimeout(r, 900));
+  assert.equal(s.closed, true, `idle worker left (${s.closeReason})`);
+  assert.deepEqual(registry.snapshot(), []);
+  const s2 = await registry.acquire(CHAT);
+  assert.notEqual(s2, s);
+});
+
+test('when the socket drops, the worker kills its children and exits 1; the controller side reports a lost worker', POSIX, async () => {
+  const s = await registry.acquire(RUN);
+  const handle = backend.started.at(-1);
+  const p = inRun(() => superviseSpawn(base({ file: script('echo up; sleep 30'), args: [] }))).then(() => null, (e) => e);
+  await new Promise((r) => setTimeout(r, 150));
+  s.terminate('cable pulled');
+  const err = await p;
+  assert.equal(err.code, 'EWORKERLOST');
+  assert.equal(err.errorClass, 'network');
+  assert.match(err.message, /lost: cable pulled/);
+  assert.equal(await handle.done, 1);
+  for (let i = 0; i < 60 && handle.worker.liveCount > 0; i += 1) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(handle.worker.liveCount, 0, 'the worker killed its children');
+  assert.deepEqual(registry.snapshot(), [], 'the entry is gone, so the next acquire starts a new worker');
+});
+
+test('tokens: unknown, reused, and a hello for another scope are refused', async () => {
+  const url = `${registry.controllerUrl}/worker`;
+  const status = (headers) => new Promise((resolve) => {
+    const ws = new WebSocket(url, { headers });
+    ws.on('unexpected-response', (_req, res) => { resolve(res.statusCode); ws.terminate(); });
+    ws.on('open', () => resolve('open'));
+    ws.on('error', () => {});
+  });
+  assert.equal(await status({}), 401);
+  assert.equal(await status({ authorization: 'Bearer nope' }), 401);
+
+  // A token the registry minted: grab it from the backend's start call, connect with the wrong scope.
+  const captured = [];
+  const spyBackend = {
+    async start(o) { captured.push(o); return { workerId: o.workerId }; },
+    async remove() {}, async listWorkers() { return []; }, describe() { return {}; },
+  };
+  const reg2 = createWorkerRegistry({ backend: spyBackend, host: '127.0.0.1', port: 0, startTimeoutMs: 1500, log: () => {} });
+  await reg2.listen();
+  try {
+    const pending = reg2.acquire({ kind: 'run', id: 'other' }).then(() => 'connected', (e) => e.message);
+    await new Promise((r) => setTimeout(r, 50));
+    const { token, workerId } = captured[0];
+    const refusal = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${reg2.port}/worker`, { headers: { authorization: `Bearer ${token}` } });
+      ws.on('open', () => ws.send(encodeFrame({ type: 'hello', apiVersion: PROTOCOL_VERSION, workerId, scope: { kind: 'chat', id: 'other' }, pid: 1, capabilities: CAPS })));
+      ws.on('message', (d) => resolve(JSON.parse(String(d))));
+      ws.on('close', () => resolve(null));
+      ws.on('error', () => resolve(null));
+    });
+    assert.equal(refusal?.type, 'refuse');
+    assert.match(refusal.reason, /scope or worker id/);
+    assert.match(await pending, /did not connect within/);
+  } finally { await reg2.closeAll(); }
+});
+
+test('a hello with the right token and scope is accepted once; a second connection with the same token is refused', async () => {
+  const captured = [];
+  const spyBackend = { async start(o) { captured.push(o); return { workerId: o.workerId }; }, async remove() {}, async listWorkers() { return []; }, describe() { return {}; } };
+  const reg2 = createWorkerRegistry({ backend: spyBackend, host: '127.0.0.1', port: 0, startTimeoutMs: 3000, log: () => {} });
+  await reg2.listen();
+  try {
+    const pending = reg2.acquire({ kind: 'run', id: 'one' });
+    await new Promise((r) => setTimeout(r, 50));
+    const { token, workerId, controllerUrl } = captured[0];
+    const w = startWorker({ url: controllerUrl, token, scope: { kind: 'run', id: 'one' }, workerId, home: tmp(), capabilities: CAPS });
+    const session = await pending;
+    assert.equal(session.workerId, workerId);
+    const again = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${reg2.port}/worker`, { headers: { authorization: `Bearer ${token}` } });
+      ws.on('unexpected-response', (_req, res) => { resolve(res.statusCode); ws.terminate(); });
+      ws.on('open', () => resolve('open'));
+      ws.on('error', () => {});
+    });
+    assert.equal(again, 401, 'a token is single-use');
+    await reg2.release({ kind: 'run', id: 'one' });
+    assert.equal(await w.done, 0);
+  } finally { await reg2.closeAll(); }
+});
+
+test('reapAtBoot removes every worker the backend still lists', async () => {
+  const removed = [];
+  const b = { async start() { throw new Error('unused'); }, async remove(h, o) { removed.push([h.workerId, o.reason]); }, async listWorkers() { return [{ workerId: 'old-1' }, { workerId: 'old-2' }]; }, describe() { return {}; } };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, log: () => {} });
+  assert.deepEqual(await reg2.reapAtBoot(), { removed: 2 });
+  assert.deepEqual(removed, [['old-1', 'orphan at boot'], ['old-2', 'orphan at boot']]);
+});
+
+test('a backend that fails to start a worker makes acquire reject with a network-class error', async () => {
+  const b = { async start() { throw new Error('no image'); }, async remove() {}, async listWorkers() { return []; }, describe() { return {}; } };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, log: () => {} });
+  await reg2.listen();
+  try {
+    const err = await reg2.acquire({ kind: 'run', id: 'x' }).then(() => null, (e) => e);
+    assert.match(err.message, /cannot start a worker for run:x: no image/);
+    assert.equal(err.errorClass, 'network');
+    assert.deepEqual(reg2.snapshot(), []);
+  } finally { await reg2.closeAll(); }
+});

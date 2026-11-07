@@ -1,0 +1,137 @@
+// src/core/executor/session.mjs
+// One authenticated worker connection on the controller: the exec/signal side the remote child
+// (remote-child.mjs) drives, the frame router for what the worker sends back, flow control
+// (acks), liveness (pings) and loss handling. Created by the registry once a worker's hello
+// has been accepted; it never decides WHICH worker a spawn goes to.
+import { randomBytes } from 'node:crypto';
+import { encodeFrame, decodeFrame, ACK_EVERY } from './protocol.mjs';
+
+const DEFAULT_PING_MS = 30_000;
+/** How long a worker may take to answer a shutdown frame with its bye before the socket is cut. */
+const SHUTDOWN_SLACK_MS = 5_000;
+
+/**
+ * @param {import('ws').WebSocket} ws   an open socket whose hello was accepted
+ * @param {{ workerId: string, scope: {kind:string,id:string}, capabilities: object, pid: number,
+ *   pingMs?: number, ackEvery?: number, log?: (msg:string) => void,
+ *   onRelay?: (frame:object) => Promise<{lines?:string[]|null, error?:string|null}> }} o
+ */
+export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pingMs = DEFAULT_PING_MS, ackEvery = ACK_EVERY, log = () => {}, onRelay = null }) {
+  const execs = new Map();   // exec id -> handlers
+  const closeFns = new Set();
+  let closed = false;
+  let closeReason = null;
+  let byeSeen = false;
+  let execSeq = 0;
+  let pingTimer = null;
+  let pongTimer = null;
+  let pending = 0;   // pings without a pong
+  const startedAt = Date.now();
+  let lastActiveAt = Date.now();
+
+  const send = (frame) => {
+    if (closed) throw new Error(`worker ${workerId} is gone (${closeReason})`);
+    ws.send(encodeFrame(frame));
+  };
+  const trySend = (frame) => { try { send(frame); } catch { /* closing */ } };
+
+  const settle = (reason) => {
+    if (closed) return;
+    closed = true;
+    closeReason = reason;
+    clearInterval(pingTimer); clearTimeout(pongTimer);
+    for (const [id, h] of execs) { execs.delete(id); try { h.onLost(reason); } catch { /* listener */ } }
+    for (const fn of closeFns) { try { fn(reason); } catch { /* listener */ } }
+  };
+
+  const onFrame = (frame) => {
+    const h = frame.id != null ? execs.get(frame.id) : null;
+    switch (frame.type) {
+      case 'started': if (h) h.onStarted({ pid: frame.pid }); return;
+      case 'spawn-error': if (h) { execs.delete(frame.id); h.onSpawnError({ code: frame.code ?? null, message: frame.message }); } return;
+      case 'out':
+        lastActiveAt = Date.now();
+        if (h) h.onLines({ stream: frame.stream, lines: frame.lines });
+        // Flow control: acknowledge every Nth frame; the worker pauses past its window otherwise.
+        if (frame.seq % ackEvery === ackEvery - 1) trySend({ type: 'ack', id: frame.id, seq: frame.seq });
+        return;
+      case 'exit':
+        lastActiveAt = Date.now();
+        if (h) { execs.delete(frame.id); h.onExit({ code: frame.code, signal: frame.signal }); }
+        return;
+      case 'ping': trySend({ type: 'pong', id: frame.id }); return;
+      case 'pong': pending = 0; clearTimeout(pongTimer); return;
+      case 'relay':
+        if (!onRelay) { trySend({ type: 'relay-result', id: frame.id, lines: null, error: 'relay is not available' }); return; }
+        Promise.resolve().then(() => onRelay(frame)).then(
+          (r) => trySend({ type: 'relay-result', id: frame.id, lines: r?.lines ?? null, error: r?.error ?? null }),
+          (err) => trySend({ type: 'relay-result', id: frame.id, lines: null, error: err?.message || 'relay failed' }),
+        );
+        return;
+      case 'log': log(`[worker ${workerId}] ${frame.level}: ${frame.msg}`); return;
+      case 'bye': byeSeen = true; return;
+      default: return;   // a controller-direction frame echoed back: ignored
+    }
+  };
+
+  ws.on('message', (data) => {
+    const frame = decodeFrame(data);
+    if (!frame) { log(`[worker ${workerId}] protocol violation: dropping the connection`); try { ws.close(4002, 'protocol violation'); } catch { /* closing */ } return; }
+    onFrame(frame);
+  });
+  ws.on('close', (code, reason) => settle(byeSeen ? 'bye' : `socket closed (${code}${reason?.length ? ` ${reason}` : ''})`));
+  ws.on('error', (err) => settle(`socket error: ${err?.message || err}`));
+
+  pingTimer = setInterval(() => {
+    if (closed) return;
+    if (pending > 0) { log(`[worker ${workerId}] no pong in ${pingMs} ms: dropping the connection`); try { ws.terminate(); } catch { /* gone */ } settle('ping timeout'); return; }
+    pending += 1;
+    trySend({ type: 'ping', id: `p${Date.now()}` });
+  }, pingMs);
+  pingTimer.unref?.();
+
+  return {
+    workerId, scope, capabilities, pid, startedAt,
+    get closed() { return closed; },
+    get closeReason() { return closeReason; },
+    get liveExecCount() { return execs.size; },
+    get lastActiveAt() { return lastActiveAt; },
+    touch() { lastActiveAt = Date.now(); },
+    /**
+     * Start one process on the worker. Returns the exec id at once; outcomes arrive on the
+     * handlers (`onStarted`, `onLines`, `onSpawnError`, `onExit`, `onLost`).
+     */
+    exec(spec, handlers) {
+      const id = `x${++execSeq}-${randomBytes(4).toString('hex')}`;
+      execs.set(id, handlers);
+      lastActiveAt = Date.now();
+      try {
+        send({ type: 'exec', id, file: spec.file, args: spec.args, cwd: spec.cwd, env: spec.env, stdin: spec.stdin ?? null, detached: spec.detached !== false });
+      } catch (err) {
+        execs.delete(id);
+        queueMicrotask(() => handlers.onSpawnError({ code: closed ? 'EWORKERLOST' : 'E2BIG', message: err.message }));
+      }
+      return id;
+    },
+    signal(id, sig) {
+      if (!execs.has(id)) return;
+      trySend({ type: 'signal', id, sig });
+    },
+    /** Ask the worker to end its processes and leave; resolves once the socket is closed. */
+    shutdown({ graceMs = 5000 } = {}) {
+      if (closed) return Promise.resolve();
+      trySend({ type: 'shutdown', graceMs });
+      return new Promise((resolve) => {
+        const t = setTimeout(() => { try { ws.terminate(); } catch { /* gone */ } settle('shutdown timeout'); resolve(); }, graceMs + SHUTDOWN_SLACK_MS);
+        t.unref?.();
+        closeFns.add(() => { clearTimeout(t); resolve(); });
+      });
+    },
+    /** Cut the socket now (the worker will kill its children when it notices). */
+    terminate(reason = 'terminated') {
+      try { ws.terminate(); } catch { /* gone */ }
+      settle(reason);
+    },
+    onClose(fn) { closeFns.add(fn); return () => closeFns.delete(fn); },
+  };
+}
