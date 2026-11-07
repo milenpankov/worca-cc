@@ -145,7 +145,19 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
   const variant = normalizeVariant(env.WORCA_K8S_WORKER_VARIANT);
   const images = envJson(env, 'WORCA_K8S_WORKER_IMAGES');
   if (images !== null && (typeof images !== 'object' || Array.isArray(images))) throw new Error('WORCA_K8S_WORKER_IMAGES must be a JSON object { engine: image }');
+  // Per-engine overrides, the form the Helm chart renders from `worker.engines`: { <engine>: { image?, variant?, resources? } }.
+  const engines = envJson(env, 'WORCA_K8S_ENGINES');
+  if (engines !== null && (typeof engines !== 'object' || Array.isArray(engines))) throw new Error('WORCA_K8S_ENGINES must be a JSON object { engine: { image, variant, resources } }');
   const resources = envJson(env, 'WORCA_K8S_RESOURCES');
+  /** What one engine's worker runs as: the per-engine entry over the defaults. */
+  const settingsFor = (engine) => {
+    const o = engines?.[engine] && typeof engines[engine] === 'object' ? engines[engine] : {};
+    return {
+      variant: o.variant ? normalizeVariant(o.variant) : variant,
+      resources: o.resources && typeof o.resources === 'object' ? o.resources : resources,
+      overrides: o.image ? { ...(images || {}), [engine]: String(o.image) } : images,
+    };
+  };
   const pendingTimeoutMs = envInt(env, 'WORCA_K8S_PENDING_TIMEOUT_MS', DEFAULT_PENDING_TIMEOUT_MS);
   const activeDeadlineSeconds = envInt(env, 'WORCA_K8S_ACTIVE_DEADLINE_S', DEFAULT_ACTIVE_DEADLINE_S);
   const live = new Map();   // workerId -> handle
@@ -254,14 +266,15 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
       if (!scope?.kind || !scope?.id || !scopeKey || !workerId) throw startFailure('start: scope, scopeKey and workerId are required');
       const workerEnv = workerEnvFor({ controllerUrl, token, scopeKey, workerId, idleMs, controllerEnv: env, extra });
       const engine = await engineFor();
-      const image = resolveImage({ pattern: imagePattern, engine, variant, version, overrides: images });
+      const { variant: engineVariant, resources: engineResources, overrides } = settingsFor(engine);
+      const image = resolveImage({ pattern: imagePattern, engine, variant: engineVariant, version, overrides });
       let pod; let name;
       if (prewarmed?.name) {
         name = prewarmed.name;
         try { pod = await client.getPod(namespace, name); } catch (err) { throw startFailure(`pre-warmed worker pod ${name}: ${err.message}`, { pod: name }); }
       } else {
         const template = readTemplate();
-        const render = (podNameFor) => renderPodSpec({ template, instanceId, scope, scopeKey, engine, variant, resources, env: workerEnv, image, activeDeadlineSeconds, bootId, name: podNameFor });
+        const render = (podNameFor) => renderPodSpec({ template, instanceId, scope, scopeKey, engine, variant: engineVariant, resources: engineResources, env: workerEnv, image, activeDeadlineSeconds, bootId, name: podNameFor });
         ({ pod } = await createPod(scope, render));
         name = pod?.metadata?.name;
       }

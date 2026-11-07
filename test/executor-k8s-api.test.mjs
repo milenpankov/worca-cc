@@ -370,3 +370,30 @@ test('the pre-warm hook watches an existing pod instead of creating one; forbidd
   assert.match(err.message, /refusing to pass GH_TOKEN/);
   assert.equal(fake.calls.length, before);
 });
+
+test('WORCA_K8S_ENGINES (the chart\'s per-engine overrides) sets the image, variant and resources for that engine only', async (t) => {
+  const engines = { claude: { image: 'reg.local/claude-worker:pinned', resources: { limits: { memory: '8Gi' } } }, codex: { variant: 'full' } };
+  const { fake, backend } = await setup(t, { WORCA_K8S_ENGINES: JSON.stringify(engines), WORCA_K8S_RESOURCES: JSON.stringify({ limits: { memory: '2Gi' } }) });
+  const p = backend.start(startArgs());
+  const pod = await fake.nextCreated();
+  const w = pod.spec.containers[0];
+  assert.equal(w.image, 'reg.local/claude-worker:pinned', 'the engine\'s own image wins over the pattern');
+  assert.deepEqual(w.resources, { limits: { memory: '8Gi' } }, 'the engine\'s resources win over WORCA_K8S_RESOURCES');
+  await fake.nextWatch();
+  fake.update(pod.metadata.name, { phase: 'Running', containerStatuses: [{ name: 'worker', state: { running: {} } }] });
+  const handle = await p;
+  await backend.remove(handle, { reason: 'done' });
+  // Another engine keeps the defaults — and a `full` variant lands in the image tag.
+  const { fake: f2, backend: b2 } = await setup(t, { WORCA_K8S_ENGINES: JSON.stringify(engines), WORCA_K8S_DEFAULT_ENGINE: 'codex' });
+  const p2 = b2.start(startArgs());
+  const pod2 = await f2.nextCreated();
+  assert.equal(pod2.spec.containers[0].image, 'ghcr.io/sinishadjukic/worca-worker:9.9.9-codex-full');
+  await f2.nextWatch();
+  f2.update(pod2.metadata.name, { phase: 'Running', containerStatuses: [{ name: 'worker', state: { running: {} } }] });
+  await b2.remove(await p2, { reason: 'done' });
+});
+
+test('WORCA_K8S_ENGINES that is not an object is refused at boot', () => {
+  // A stub api: the refusal happens while reading the configuration, before any call.
+  assert.throws(() => createKubernetesBackend({ env: { WORCA_K8S_ENGINES: '[1]', WORCA_K8S_POD_TEMPLATE: '/nonexistent.json' }, api: { namespace: 'agents', close() {} }, log: () => {} }), /WORCA_K8S_ENGINES must be a JSON object/);
+});
