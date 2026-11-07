@@ -150,7 +150,7 @@ export function workerEnvFor({ scopeKey, workerId, token, controllerUrl, idleMs,
   return out;
 }
 
-export async function createDockerBackend({ env = process.env, log = () => {}, api = null, controllerId = null } = {}) {
+export async function createDockerBackend({ env = process.env, log = () => {}, api = null, controllerId = null, bootId = `ctl-${process.pid}-${Date.now().toString(36)}` } = {}) {
   const docker = api || createDockerApi(dockerEndpoint(env));
   let version;
   try { version = await docker.version(); } catch (err) { throw new Error(`cannot reach the Docker Engine (${describeEndpoint(env)}): ${err.message}. Mount the socket or set WORCA_DOCKER_HOST to a socket proxy.`); }
@@ -167,7 +167,6 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   const mem = parseBytes(env.WORCA_WORKER_MEM || '4g');
   const cpus = Number(env.WORCA_WORKER_CPUS || 2);
   const pidsLimit = Number(env.WORCA_WORKER_PIDS || 1024);
-  const bootId = `${process.pid}-${Date.now().toString(36)}`;
   const live = new Map();   // workerId -> handle
   log(`docker ${version?.Version || '?'} via ${describeEndpoint(env)}; controller ${self.Name || selfId} on network ${template.network}, ${template.mounts.length} mount(s) replicated, user ${template.user || '(image default)'}`);
 

@@ -8,19 +8,21 @@
 // controller/worker path on one machine, and for the server's own tests.
 import { createInProcessBackend } from './in-process.mjs';
 
-export async function createBackend(kind, { env = process.env, log = () => {}, homeRoot } = {}) {
+/** `bootId`: the controller's boot id, which the registry also carries, so a worker container's label names
+ *  the controller process that started it. */
+export async function createBackend(kind, { env = process.env, log = () => {}, homeRoot, bootId } = {}) {
   const override = String(env.WORCA_EXECUTOR_BACKEND || '').trim().toLowerCase();
   if (override === 'in-process') return createInProcessBackend({ homeRoot, log });
   if (override) throw new Error(`WORCA_EXECUTOR_BACKEND=${override} is not a backend (in-process is the only override)`);
   if (kind === 'docker') {
     const mod = await import('./docker.mjs').catch(() => null);
     if (!mod?.createDockerBackend) throw new Error('the docker executor backend is not available in this version');
-    return mod.createDockerBackend({ env, log });
+    return mod.createDockerBackend({ env, log, ...(bootId ? { bootId } : {}) });
   }
   if (kind === 'kubernetes') {
     const mod = await import('./kubernetes.mjs').catch(() => null);
     if (!mod?.createKubernetesBackend) throw new Error('the kubernetes executor backend is not available in this version');
-    return mod.createKubernetesBackend({ env, log });
+    return mod.createKubernetesBackend({ env, log, ...(bootId ? { bootId } : {}) });
   }
   throw new Error(`no backend for executor kind ${kind}`);
 }

@@ -7801,9 +7801,11 @@ async function installExecutorFromEnv({ log = (l) => console.log(l), port, host 
   if (cfgErr) throw new Error(cfgErr);
   const kind = executorKind();
   if (kind === 'local') return { kind, registry: null };
-  const backend = await createBackend(kind, { log: (l) => log(`[worca-ui] executor: ${l}`), homeRoot: worcaHome() });
+  // One boot id for the registry and the backend: a worker container's label names this controller process.
+  const bootId = `ctl-${randomUUID()}`;
+  const backend = await createBackend(kind, { log: (l) => log(`[worca-ui] executor: ${l}`), homeRoot: worcaHome(), bootId });
   const registry = createWorkerRegistry({
-    backend, log: (l) => log(`[worca-ui] workers: ${l}`), onRelay: (f) => relayAskLine(f.token, f.line),
+    backend, bootId, log: (l) => log(`[worca-ui] workers: ${l}`), onRelay: (f) => relayAskLine(f.token, f.line),
     ...(port != null ? { port } : {}), ...(host ? { host } : {}),
   });
   await registry.listen();
