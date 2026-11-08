@@ -223,7 +223,9 @@ side is in [remote-access.md](remote-access.md); the shape is the same as on Rai
 in the tunnel's place. `WORCA_IDENTITY_ISSUER` (an OIDC proxy) is the alternative;
 `WORCA_INSECURE_NO_IDENTITY_CHECK=1` says a proxy you trust is the only way in.
 
-Probes and the helm test send `Host: localhost`, so they pass without an allowed host.
+Probes send `Host: localhost` from the kubelet, which the server sees as the pod network's gateway,
+so they pass without an allowed host. Any other pod is an unknown peer and gets 403: that is what
+`helm test` asserts (a 200 there would mean the guard is off).
 
 ## NetworkPolicy
 
@@ -269,7 +271,8 @@ job (Actions → CI → Run workflow).
 
 ## Check it
 
-- [ ] `helm test worca -n worca` passes (the UI answers `/api/health` with `Host: localhost`).
+- [ ] `helm test worca -n worca` passes (the UI Service refuses a pod peer with 403 `forbidden`; the guard is on).
+- [ ] `kubectl -n worca exec worca-0 -- curl -s -H 'Host: localhost' localhost:4317/api/health` reports `"executor":{"kind":"kubernetes"`.
 - [ ] `kubectl -n worca get pvc`: `db-worca-0` is `Bound` with `RWO`, `worca-shared` with `RWX`.
 - [ ] `kubectl -n worca exec statefulset/worca -- sh -c 'touch /worca/.w && rm /worca/.w && touch /projects/.w && rm /projects/.w'` succeeds (the shared volume is writable by uid 1000).
 - [ ] A mock run (`WORCA_MOCK=1`, or the UI's mock toggle) creates a pod labelled `worca.dev/instance=<release>`, and the pod is gone when the run finishes.

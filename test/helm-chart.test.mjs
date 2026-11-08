@@ -190,11 +190,14 @@ test('default render: the worker pod template, the controller StatefulSet and th
   assert.deepEqual(role.rules.find((r) => r.resources.includes('pods/log')).verbs, ['get']);
   assert.equal(byKind(all, 'RoleBinding').subjects[0].name, tpl.serviceAccountName);
 
-  // The helm test sends the Host header too.
+  // The helm test is a pod peer, which the server refuses in local mode (G4) and, with the Ingress on,
+  // by Host: it asserts the 403, not a 200.
   const testPod = byKind(all, 'Pod');
   assert.equal(testPod.metadata.annotations['helm.sh/hook'], 'test');
-  const cmd = testPod.spec.containers[0].command;
-  assert.ok(cmd.includes('Host: localhost') && cmd.at(-1).endsWith('/api/health'), 'helm test curls /api/health with Host: localhost');
+  const curl = testPod.spec.containers[0];
+  assert.equal(curl.env.find((e) => e.name === 'URL').value, `http://${byKind(all, 'StatefulSet').metadata.name}:4317/api/health`);
+  assert.match(curl.args[0], /!= 403/, 'helm test expects 403 from the Service');
+  assert.match(curl.args[0], /forbidden/, "helm test checks for worca's forbidden body");
 
   compareGolden('default', rendered);
   if (KUBECONFORM) {

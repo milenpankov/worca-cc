@@ -34,7 +34,7 @@ dependencies and no CRDs.
 | Deployment, Service, PVC, Ingress | `<fullname>-broker[-keypage]` | only `broker.enabled` |
 | NetworkPolicy | `<fullname>-workers`, `<fullname>-controller` | only `networkPolicy.enabled` |
 | PodDisruptionBudget | `<fullname>` | only `pdb.enabled` (off on purpose, see values.yaml) |
-| Pod (helm test) | `<fullname>-test-health` | `curl -H 'Host: localhost' /api/health` |
+| Pod (helm test) | `<fullname>-test-guard` | the UI Service answers a pod peer with 403 `forbidden` (the guard is on) |
 
 ## Values
 

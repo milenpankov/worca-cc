@@ -960,14 +960,16 @@ spec:
                 port:
                   name: http
 ---
-# Source: worca/templates/tests/test-health.yaml
-# `helm test <release>`: the UI answers /api/health through its Service. The Host header is
-# the point: the server's Host guard returns 403 to a Host it does not know (the Service name
-# here), and `localhost` is always accepted.
+# Source: worca/templates/tests/test-guard.yaml
+# `helm test <release>`: the UI Service answers, and the server refuses a caller it does not know.
+# A test pod is a plain pod peer: in local mode (no Ingress) the server answers only loopback and
+# the node's gateway (kubelet probes), so the right response here is 403 `forbidden`; with the
+# Ingress on, the Service name is not an allowed host, so it is 403 too. A 200 would mean the
+# guard is off. The health body itself is read inside the pod (tools/k8s-smoke.mjs, docs/kubernetes.md).
 apiVersion: v1
 kind: Pod
 metadata:
-  name: worca-test-health
+  name: worca-test-guard
   namespace: worca-test
   labels:
     helm.sh/chart: worca-__CHART_VERSION__
@@ -993,8 +995,17 @@ spec:
   containers:
     - name: curl
       image: curlimages/curl:8.11.1
-      command: ["curl", "-fsS", "--max-time", "10", "-H", "Host: localhost",
-                "http://worca:4317/api/health"]
+      env:
+        - name: URL
+          value: "http://worca:4317/api/health"
+      command: ["sh", "-ec"]
+      args:
+        - |
+          code=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "$URL")
+          if [ "$code" != 403 ]; then echo "expected 403 from a pod peer at $URL, got $code"; exit 1; fi
+          body=$(curl -sS --max-time 10 "$URL")
+          case "$body" in *forbidden*) ;; *) echo "403 without worca's forbidden body: $body"; exit 1;; esac
+          echo "ok: $URL answers and refuses an unknown peer ($body)"
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
