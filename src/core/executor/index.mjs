@@ -105,6 +105,16 @@ export function workerHomeDir(scope, home = worcaHome()) {
 }
 
 /**
+ * Whether an engine's processes run on a worker image rather than in this process's container: under a remote
+ * executor every engine but Claude Code, which the controller image ships (its own helper jobs run on it). The
+ * controller's checks of a binary and its sign-in (readiness, the chat gate, a run's engine preflight) do not apply to
+ * such an engine; the worker refuses a binary its image lacks at the first spawn, naming the image to fix.
+ */
+export function engineOnWorker(engine) {
+  return !!installed && engine !== 'claude';
+}
+
+/**
  * The engine a helper job (a PR description, a run overview) runs on from where it is called. Outside any scope its
  * spawn stays on the controller, whose image carries Claude Code only: under a remote executor such a job runs on
  * Claude, as a Cursor run's helpers always do. Inside a scope, and under the local executor, the engine asked for.

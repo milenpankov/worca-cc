@@ -192,7 +192,10 @@ test("down removes this installation's leftover worker containers; pull refreshe
     const o = io();
     const env = { PATH: process.env.PATH || '', COMPOSE_PROJECT_NAME: 'team-a' };
     assert.equal(await cmdContainer(['up', '--with', 'workers', '--projects', '/Users/me/dev'], { ...o, exec, dir, env }), 0);
+    const before = calls.length;
     assert.equal(await cmdContainer(['down'], { ...o, exec, dir, env }), 0);
+    const verbs = calls.slice(before).filter((c) => c.args[0] !== 'compose' || c.args[1] !== 'version').map((c) => (c.args[0] === 'compose' ? `compose ${c.args[c.args.length - 1]}` : c.args[0]));
+    assert.deepEqual(verbs, ['compose stop', 'ps', 'rm', 'compose down'], 'the controller stops (and releases its workers) first, leftovers go, then the network can be removed');
     const ps = calls.find((c) => c.args[0] === 'ps');
     assert.deepEqual(ps.args, ['ps', '-aq', '--filter', 'label=worca.instance=team-a'], "this stack's workers only");
     assert.deepEqual(calls.find((c) => c.args[0] === 'rm').args, ['rm', '-f', 'aaa111', 'bbb222']);

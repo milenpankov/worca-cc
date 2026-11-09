@@ -108,7 +108,7 @@ import { createClaudeNormalizer } from './engines/claude-events.mjs';
 import { cachedFreeDailyCounts } from './openrouter-free.mjs';
 import { withBillTo, currentBillTo } from './billing.mjs';
 import { withExecutorScope } from './executor/scope.mjs';
-import { releaseWorker, isRemoteExecutor, currentExecutor } from './executor/index.mjs';
+import { releaseWorker, isRemoteExecutor, currentExecutor, engineOnWorker } from './executor/index.mjs';
 import { bridgedModelRefusal } from './executor/gates.mjs';
 import { claimRunDir, claimRunExtras, shareFailureReason } from './agent-pool.mjs';
 import { brokerEnabled, brokerEngineRefusal, brokerInfo, personSlots } from './broker-client.mjs';
@@ -3761,7 +3761,7 @@ export class RunHarness extends EventEmitter {
     const name = this.claude.engine || 'claude';
     if (name === 'claude') return null;
     const adapter = getEngine(name);
-    if (!this.claude.mock && isRemoteExecutor()) {
+    if (!this.claude.mock && engineOnWorker(name)) {
       // The engine runs on its worker image, not here: a controller-side preflight (binary present, signed in)
       // would only report what the controller image lacks. The worker refuses a binary it does not have at the
       // first spawn (engines/spawn.mjs missingOnWorker), with the image to fix named.

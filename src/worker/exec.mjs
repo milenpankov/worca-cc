@@ -200,6 +200,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         });
       } catch (err) {
         report({ type: 'spawn-error', id, code: err.code ?? null, message: String(err.message || err).slice(0, 4000) });
+        if (!live.size) for (const fn of idleFns) fn();   // nothing started: the worker is as idle as before the frame
         return;
       }
       const e = { child, pending: [], pendingLines: 0, pendingChars: 0, seq: 0, lastAck: -1, paused: false, flushTimer: null, grace: null, started: false, reported: false };

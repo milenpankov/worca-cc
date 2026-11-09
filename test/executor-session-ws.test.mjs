@@ -657,3 +657,22 @@ test("a chat worker's own idle timer is a backstop: it fires well after the cont
     assert.ok(!got.some((l) => /is gone: bye/.test(l)), 'a routine leave is not a loss');
   } finally { await r.closeAll(); }
 });
+
+test("an acquire parked on a leaving worker's close ends with the caller's abort", async () => {
+  const b = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  const r = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 60_000, chatIdleMs: 60_000, log: () => {} });
+  await r.listen();
+  try {
+    const scope = { kind: 'chat', id: 'half-open' };
+    const s = await r.acquire(scope);
+    // The worker says bye, but its close never arrives (a half-open socket): the session is 'leaving' for good.
+    Object.defineProperty(s, 'leaving', { get: () => true });
+    const ctl = new AbortController();
+    const t0 = Date.now();
+    const p = r.acquire(scope, { signal: ctl.signal }).then(() => null, (e) => e);
+    setTimeout(() => ctl.abort(), 100);
+    const err = await p;
+    assert.equal(err?.name, 'AbortError');
+    assert.ok(Date.now() - t0 < 5000, 'the stop was not held until the ping timeout');
+  } finally { await r.closeAll(); }
+});

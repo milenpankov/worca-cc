@@ -163,6 +163,11 @@ test('the backend replicates the controller container and runs a worker on the s
     assert.deepEqual(cx.spec.HostConfig.Mounts.map((m) => m.Target), ['/worca', '/Users/me/dev', '/etc/worca/ca.pem']);
     assert.ok(!cx.spec.Env.some((e) => e.startsWith('WORCA_WORKER_SEED_CLAUDE=')));
     await b.remove(hc, { reason: 'test' });
+    // A start abandoned before anything was created (the run was stopped meanwhile) creates nothing.
+    const stopped = new AbortController(); stopped.abort();
+    const made = d.containers.size;
+    await assert.rejects(b.start({ scope: { kind: 'run', id: 'r-ab' }, scopeKey: 'run:r-ab', workerId: 'w-run-abab0000', token: 't', controllerUrl: 'ws://worca:4319', idleMs: null, signal: stopped.signal }), (e) => e.name === 'AbortError');
+    assert.equal(d.containers.size, made, 'no container for a run that is over');
     assert.ok(c.spec.Env.includes('WORCA_CONTROLLER_URL=ws://worca:4319'));
     assert.ok(!c.spec.Env.some((e) => e.startsWith('GH_TOKEN=')));
     const listed = await b.listWorkers();

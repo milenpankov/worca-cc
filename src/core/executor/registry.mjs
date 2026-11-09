@@ -30,6 +30,8 @@ import { startFailure, abortError, sleep, envInt as sharedEnvInt } from './share
 export const DEFAULT_WORKER_PORT = 4319;
 const HELLO_TIMEOUT_MS = 10_000;
 const SWEEP_MS = 30_000;
+/** How long an acquire waits for a leaving worker's socket to close before it looks again (an abort ends it sooner). */
+const LEAVE_WAIT_MS = 10_000;
 const WAIT_POLL_MS = 2_000;
 const CAP_WAIT_MS = 10 * 60_000;
 
@@ -297,7 +299,7 @@ export function createWorkerRegistry({
         entry ||= entries.get(ek) || null;
         // A worker on its way out (it idled out by itself and said bye; its close is not yet processed) takes no more
         // work: wait for the close, then start afresh.
-        if (entry?.state === 'ready' && entry.session.leaving) { await new Promise((r) => entry.session.onClose(r)); continue; }
+        if (entry?.state === 'ready' && entry.session.leaving) { await Promise.race([new Promise((r) => entry.session.onClose(r)), sleep(LEAVE_WAIT_MS, signal)]); continue; }
         if (entry?.state === 'ready') { entry.session.touch(); return entry.session; }
         if (entry?.state === 'starting') return waitFor(entry, signal);
         // The cap bounds how many scopes hold workers. A scope that already holds one never waits for its second

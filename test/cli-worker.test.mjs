@@ -329,3 +329,14 @@ test("a scrubbed spawn gets nothing of the worker's own beyond what its scrub le
   assert.deepEqual([open.OPENAI_API_KEY, open.AWS_SECRET_ACCESS_KEY, open.OTHER_NAME], ['sk-worker', 'aws', 'x'], 'no scrub: as before');
   assert.equal(childEnv({ PATH: '/bin', WORCA_ENV_KEEP: '' }, { home: '/h', workerEnv, exists: () => true }).OPENAI_API_KEY, undefined, 'a scrub that lets nothing through');
 });
+
+test('a spawn that fails at once leaves the worker as idle as before: the idle callbacks fire', async () => {
+  const frames = []; let idle = 0;
+  const runner = createExecRunner({ send: (f) => frames.push(f), home: tmpdir(), log: () => {} });
+  runner.onIdle(() => { idle += 1; });
+  runner.start({ type: 'exec', id: 'x-bad', file: '/nonexistent/worca-no-such-binary', args: [], cwd: null, env: {}, stdin: null, detached: true });
+  for (let i = 0; i < 100 && !frames.some((f) => f.type === 'spawn-error'); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(frames.some((f) => f.type === 'spawn-error'), true);
+  assert.equal(idle, 1, 'a chat worker whose exec failed at once still idles out by itself');
+  assert.equal(runner.liveCount, 0);
+});

@@ -10,7 +10,7 @@ import { probeClaudeAuth } from '../preflight.mjs';
 import { configuredClaudeBin, explainUnspawnableCli } from '../cli-resolve.mjs';
 import { CLAUDE_CLI } from './cli-specs.mjs';
 import { brokerEngineRefusal } from '../broker-client.mjs';
-import { isRemoteExecutor, currentExecutor } from '../executor/index.mjs';
+import { engineOnWorker, currentExecutor } from '../executor/index.mjs';
 
 /** Claude's readiness: its sign-in (claude auth status, cached; env keys and the broker count as signed in). Only a
  *  definite signed-out refuses — an unknown answer (an older CLI) reads as ready, as the run-start check treats it. */
@@ -54,7 +54,7 @@ export async function engineReadiness({ force = false, now = Date.now(), mock = 
     // tell this (an instance setting) from a sign-in the user can fix.
     const refusal = brokerEngineRefusal(e.name);
     if (refusal) return { name: e.name, label: engineLabel(e.name), ready: false, reason: refusal, broker: true };
-    if (e.name !== 'claude' && isRemoteExecutor()) {
+    if (engineOnWorker(e.name)) {
       return { name: e.name, label: engineLabel(e.name), ready: true, worker: true,
         reason: `runs on the ${e.name} worker image (WORCA_EXECUTOR=${currentExecutor().kind}) — not checked on the controller` };
     }

@@ -8,7 +8,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { useTempHome } from './helpers/temp-home.mjs';
 import { createLoopbackRegistry, createLoopbackSession } from './helpers/loopback-worker-session.mjs';
-import { superviseSpawn, missingOnWorker, tooOldOnWorker, olderThan, engineOfSpawn, guardPid } from '../src/core/engines/spawn.mjs';
+import { superviseSpawn, missingOnWorker, tooOldOnWorker, olderThan, versionAtLeast, engineOfSpawn, guardPid } from '../src/core/engines/spawn.mjs';
+import { versionAtLeast as familyVersionAtLeast } from '../src/core/engines/gemini-family.mjs';
+import { engineOnWorker } from '../src/core/executor/index.mjs';
 import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
 import { installExecutorFromEnv, keepsWorkerHome, reapWorkersAtBoot, askRelayUrl, WORKER_RELAY_PORT, relayAskLine, bindAskRelays } from '../src/core/executor/controller.mjs';
 import { composeSpawnEnv, scrubKeepList, ENV_KEEP_VAR } from '../src/core/engines/spawn.mjs';
@@ -421,7 +423,8 @@ test("a chat's engine on a worker is held to the version its lockdown needs", PO
   assert.equal(olderThan('1.19.3', '1.19.4'), true);
   assert.equal(olderThan('2.0.0', '1.19.4'), false);
   assert.equal(olderThan(null, '1.0.0'), false, 'a version that could not be read is not judged');
-  assert.equal(olderThan('dev build', '1.0.0'), false);
+  assert.equal(familyVersionAtLeast, versionAtLeast, 'the worker floor and the controller gate use the one compare');
+  assert.equal(olderThan('dev build', '1.0.0'), true, 'no digits reads as 0.0.0, as the controller\'s own gate reads it (versionAtLeast)');
   const caps = { engines: { codex: { bin: '/usr/local/bin/codex', version: 'codex-cli 0.150.2' }, claude: { bin: '/usr/local/bin/claude', version: null } } };
   const s = { workerId: 'w-old', capabilities: caps };
   assert.match(tooOldOnWorker(s, 'codex', '0.162'), /worker w-old has codex codex-cli 0\.150\.2: a chat needs 0\.162 or newer\. Point the codex worker image at a newer one: WORCA_WORKER_IMAGE \(Compose\) or worker\.engines\.codex\.image \(Helm\)/);
@@ -544,4 +547,14 @@ test('a worker HOME is discarded without a blocking removal: renamed aside at on
   for (let i = 0; i < 100 && readdirSync(homes).length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(readdirSync(homes), []);
   rmSync(root, { recursive: true, force: true });
+});
+
+test('one predicate says which engines run on a worker image rather than here', () => {
+  assert.deepEqual(['claude', 'codex', 'gemini'].map(engineOnWorker), [false, false, false], 'no worker containers: everything runs here');
+  installExecutor({ kind: 'docker', registry: createLoopbackRegistry({ session: createLoopbackSession({ workerId: 'w-p' }) }) });
+  try {
+    assert.deepEqual(['claude', 'codex', 'gemini'].map(engineOnWorker), [false, true, true], 'Claude Code is in the controller image; every other engine is on its worker');
+    const src = (f) => readFileSync(new URL(`../src/core/${f}`, import.meta.url), 'utf8');
+    for (const [f, re] of [['engines/readiness.mjs', /engineOnWorker\(e\.name\)/], ['engines/chat-descriptor.mjs', /seams\.onWorker \?\? engineOnWorker\(d\.engine\)/], ['run-harness.mjs', /engineOnWorker\(name\)/]]) assert.match(src(f), re, f);
+  } finally { installExecutor(null); }
 });

@@ -5,7 +5,7 @@
 // purpose: the adapters import it.
 import { ENGINES, engineLabel, chatEnginesTaking } from '../../shared/engine-switch.mjs';
 import { CODEX_PRICES, codexCachedRate, listPriceFor } from '../list-prices.mjs';
-import { isRemoteExecutor } from '../executor/index.mjs';
+import { engineOnWorker } from '../executor/index.mjs';
 
 const DOCS = 'https://github.com/SinishaDjukic/worca-cc/blob/dev/docs/models.md';
 /** A descriptor's `suggestionModel` that means "the chat's own model". */
@@ -127,7 +127,7 @@ export async function chatEngineGate(d, { model, capped = false, modelPriced = (
   // Under a remote executor the chat's engine runs on its worker image: the binary's flags, the self-test and the
   // sign-in are not this container's to check (it ships Claude Code only, and would answer "install codex"). A worker
   // that lacks the engine refuses the spawn itself, naming the image to fix. Claude is here, and stays checked.
-  if (seams.onWorker ?? (isRemoteExecutor() && d.engine !== 'claude')) return null;
+  if (seams.onWorker ?? engineOnWorker(d.engine)) return null;
   const notReady = (refusal) => ({ message: refusal, code: d.notReady.code, notReady: true });
   let support = null;
   try { support = await d.askSupport(undefined, seams.askSupport); } catch (err) { support = { refusal: err?.message || String(err) }; }

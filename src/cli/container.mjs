@@ -360,10 +360,11 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
       return 0;
     }
     case 'down': {
-      const code = compose(['down']);
-      // Worker containers (compose.workers.yml) are started by the controller, not by compose, so
-      // `down` does not know them: whatever is left is removed by its label. Best effort.
-      // Only this installation's: another worca stack on the same host keeps its workers.
+      // Worker containers (compose.workers.yml) are started by the controller, not by compose, so `down` does not
+      // know them — and while one is still attached, compose cannot remove the project network. So: stop the stack
+      // first (the controller drains and tells its workers to leave), remove any worker still around by its label,
+      // then take the stack down. Only this installation's workers: another worca stack on the host keeps its own.
+      compose(['stop']);
       const instance = workerInstanceOf({ dotEnv: (name) => readEnvValue(dir, name), env: composeEnv ?? hostEnv });
       const ps = exec(rt.bin, ['ps', '-aq', '--filter', `label=${WORKER_INSTANCE_LABEL}=${instance}`], { cwd: dir, env: composeEnv, capture: true });
       const ids = String(ps.stdout || '').split(/\s+/).filter(Boolean);
@@ -371,7 +372,7 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
         exec(rt.bin, ['rm', '-f', ...ids], { cwd: dir, env: composeEnv, capture: true });
         out(`removed ${ids.length} worker container(s)`);
       }
-      return code;
+      return compose(['down']);
     }
     case 'status': return compose(['ps']);
     case 'logs': return compose(['logs', ...(a.follow ? ['-f'] : []), 'worca']);

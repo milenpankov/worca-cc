@@ -9,7 +9,7 @@
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, INSTANCE_LABEL, NETWORK_ROLE_LABEL, FULL_VARIANT_ENGINES, fullVariantEngines, passThroughEnv, defaultWorkerEngine, envInt } from '../shared.mjs';
+import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, INSTANCE_LABEL, NETWORK_ROLE_LABEL, FULL_VARIANT_ENGINES, fullVariantEngines, passThroughEnv, defaultWorkerEngine, envInt, abortError } from '../shared.mjs';
 
 export const DOCKER_API = 'v1.43';
 export { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL };
@@ -248,7 +248,8 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
     template,
     /** What tells this scope's workers apart: the image an engine runs on (one image for every engine = one worker). */
     async classFor(engine) { return workerImageFor(engine || await engineFor(), { pattern, controllerImage: template.image, fullEngines }) || 'none'; },
-    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine: asked = null, connected = () => false }) {
+    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine: asked = null, signal = null, connected = () => false }) {
+      if (signal?.aborted) throw abortError();   // the run was stopped while its worker was being arranged: nothing to create
       const engine = asked || await engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
       const image = workerImageFor(engine, { pattern, controllerImage: template.image, fullEngines });
       if (!image) throw new Error(`no worker image can be derived from the controller's image (${template.image || 'unknown'}): set WORCA_WORKER_IMAGE, e.g. registry/worca-worker:<tag>-{engine}`);
@@ -267,6 +268,7 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
         },
       };
       let created;
+      if (signal?.aborted) throw abortError();
       try { created = await docker.create(name, spec); } catch (err) {
         if (err.status === 404) throw new Error(`worker image ${image} is not present on this host (pull it, or set WORCA_WORKER_IMAGE)`);
         throw new Error(`cannot create worker container: ${err.message}`);
@@ -278,6 +280,7 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
         // A container that dies at once (a bad image, a missing binary): say why now, not after the start timeout.
         const deadline = Date.now() + START_WAIT_MS;
         for (;;) {
+          if (signal?.aborted) throw abortError();   // stopped meanwhile: the container goes (below), nobody waits for it
           const info = await docker.inspect(id);
           if (info?.State?.Running) break;
           if (info?.State?.Status === 'exited' || info?.State?.Dead) {

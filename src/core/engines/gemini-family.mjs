@@ -14,7 +14,7 @@ import { homedir } from 'node:os';
 import { join, relative, resolve, sep, isAbsolute } from 'node:path';
 import { worcaHome } from '../projects.mjs';
 import { hostGuardEnabled, hostGuardSystemPrompt } from '../host-guard.mjs';
-import { superviseSpawn, guardPid, composeSpawnEnv, cleanRunEnv, safeEmit, writableRootsInWorcaHome } from './spawn.mjs';
+import { superviseSpawn, guardPid, composeSpawnEnv, cleanRunEnv, safeEmit, writableRootsInWorcaHome, versionAtLeast } from './spawn.mjs';
 import { createRedactor } from '../redact.mjs';
 import { strongestClass } from '../recoverable-error.mjs';
 
@@ -193,13 +193,7 @@ export function familyPreflight({ bin, cli, env = process.env, timeoutMs = 10000
 
 // ── chat ─────────────────────────────────────────────────────────────────────
 
-/** `a` is at least `b` (dotted numbers; a pre-release tag ignored). */
-export function versionAtLeast(a, b) {
-  const n = (v) => String(v).replace(/^[^0-9]*/, '').split(/[.-]/).slice(0, 3).map((x) => Number.parseInt(x, 10) || 0);
-  const [x, y] = [n(a), n(b)];
-  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
-  return true;
-}
+export { versionAtLeast };   // the one version compare (spawn.mjs), kept exported here for its callers
 
 /**
  * Can this CLI be locked down for a chat? Its `--help` names every flag the lockdown needs and its `--version` is at

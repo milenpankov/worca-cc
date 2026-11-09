@@ -46,13 +46,17 @@ export function missingOnWorker(session, exe) {
     + `Point the ${engine} worker image at one that ships it: WORCA_WORKER_IMAGE (Compose) or worker.engines.${engine}.image (Helm).`;
 }
 
-/** True when the first `x.y[.z]` in `have` is lower than `min`. A version that cannot be read is not judged. */
+/** `a` is at least `b` (dotted numbers; a leading name such as `codex-cli ` and a pre-release tag are ignored, a part
+ *  that is not a number counts as 0). The one compare for every engine's version floor, here and on a worker. */
+export function versionAtLeast(a, b) {
+  const n = (v) => String(v).replace(/^[^0-9]*/, '').split(/[.-]/).slice(0, 3).map((x) => Number.parseInt(x, 10) || 0);
+  const [x, y] = [n(a), n(b)];
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return true;
+}
+/** True when `have` is below `min`; a version that could not be read at all (null) is not judged. */
 export function olderThan(have, min) {
-  const parse = (v) => { const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(v ?? '')); return m ? [Number(m[1]), Number(m[2]), Number(m[3] || 0)] : null; };
-  const [a, b] = [parse(have), parse(min)];
-  if (!a || !b) return false;
-  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] < b[i];
-  return false;
+  return have != null && min != null && !versionAtLeast(have, min);
 }
 
 /**
