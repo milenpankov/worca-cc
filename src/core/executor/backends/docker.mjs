@@ -49,11 +49,13 @@ export function selfContainerId(env = process.env, { read = (f) => readFileSync(
  * the hostname is the fallback, which is the id's first 12 characters unless the operator set a hostname.
  */
 export function containerIdFrom(cgroup = '', mountinfo = '') {
-  for (const text of [cgroup, mountinfo]) {
-    const m = /(?:^|[/-])([0-9a-f]{64})(?:\.scope)?(?=[/\s]|$)/m.exec(String(text));
-    if (m) return m[1];
-  }
-  return null;
+  // cgroup: the id ends a line (`/docker/<id>`, `docker-<id>.scope`).
+  const c = /(?:^|[/-])([0-9a-f]{64})(?:\.scope)?[ \t]*$/m.exec(String(cgroup));
+  if (c) return c[1];
+  // mountinfo: ONLY the files Docker mounts from the container's own folder. Any 64-hex path will not do: the root
+  // mount's overlay2 `upperdir` and every anonymous volume carry one too, and they come first.
+  const m = /\/containers\/([0-9a-f]{64})\/(?:hostname|hosts|resolv\.conf)(?=\s)/.exec(String(mountinfo));
+  return m ? m[1] : null;
 }
 
 /** A tiny Docker Engine API client over node:http (no dependency). */

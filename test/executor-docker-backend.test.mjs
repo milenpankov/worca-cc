@@ -168,6 +168,16 @@ test("the controller finds its own container id in /proc, whatever the cgroup ve
   assert.equal(containerIdFrom(`0::/system.slice/docker-${id}.scope\n`), id, 'the systemd cgroup driver');
   assert.equal(containerIdFrom('0::/\n', `705 573 0:52 / / rw - overlay overlay rw\n710 705 8:1 /var/lib/docker/containers/${id}/hostname /etc/hostname rw - ext4 /dev/sda1 rw\n`), id, 'cgroup v2: the id is in the mounts Docker makes');
   assert.equal(containerIdFrom('0::/\n', '705 573 0:52 / / rw - overlay overlay rw\n'), null);
+  // As a real Docker 29 / overlay2 / cgroup v2 container has it: the root mount's upperdir and a volume carry 64-hex
+  // ids of their own, BEFORE the container's files. Only the container's own folder names the container.
+  const layer = 'b'.repeat(64); const vol = 'c'.repeat(64);
+  const real = [
+    `1479 1100 0:215 / / rw,relatime master:412 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/ABC,upperdir=/var/lib/docker/overlay2/${layer}/diff,workdir=/var/lib/docker/overlay2/${layer}/work`,
+    `1492 1479 8:2 /var/lib/docker/volumes/${vol}/_data /worca rw,relatime - ext4 /dev/sda2 rw`,
+    `1493 1479 8:2 /var/lib/docker/containers/${id}/resolv.conf /etc/resolv.conf rw,relatime - ext4 /dev/sda2 rw`,
+    `1494 1479 8:2 /var/lib/docker/containers/${id}/hostname /etc/hostname rw,relatime - ext4 /dev/sda2 rw`, ''].join('\n');
+  assert.equal(containerIdFrom('0::/\n', real), id, "not the image layer's id, not a volume's");
+  assert.equal(containerIdFrom('0::/\n', real.split('\n').slice(0, 2).join('\n') + '\n'), null, 'no container file mounted: the hostname decides');
   assert.equal(containerIdFrom(`1:name=x:/docker/${id.slice(0, 63)}\n`), null, 'not 64 hex characters: not an id');
   const read = (files) => (f) => { if (f in files) return files[f]; throw new Error('ENOENT'); };
   assert.equal(selfContainerId({ HOSTNAME: 'my-host' }, { read: read({ '/proc/self/cgroup': `1:cpu:/docker/${id}\n` }) }), id, 'a controller with a hostname of its own is still found');
