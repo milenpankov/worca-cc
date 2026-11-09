@@ -49,9 +49,15 @@ gets one worker per image, and they end together.
 - **Loss.** When a worker's connection drops it kills its children and exits; the controller
   reports the step as a network failure, which the run's failure policy retries on a fresh worker.
   There is no reconnect.
-- **Boot.** A controller removes every worker a previous controller left (their tokens died with
-  it), the worker homes of runs that are not paused, and staged spawn folders older than itself
-  (each spawn removes its own; what a crashed controller left is nobody's).
+- **Boot.** A controller removes every worker a previous controller of the same installation left
+  (their tokens died with it; never one it started itself a moment ago), the worker homes of runs
+  nothing can continue — a paused run's and a crash-interrupted run's stay for their resume — and
+  staged spawn folders older than itself (each spawn removes its own; what a crashed controller
+  left is nobody's).
+- **Tokens.** A worker's one-time token is good for as long as its container is still coming up
+  (an image pull on a cold node may take minutes), then for two minutes once it exists.
+- **Output.** A worker sends output in frames of bounded size: a very long line travels alone, or in
+  pieces when no frame can hold it, and a stream without newlines is cut into pieces.
 
 ## Configuration
 
@@ -131,5 +137,6 @@ workers use the token or the broker.
 ## Backends
 
 - `docker` — the controller starts containers through the Docker Engine, replicating its own
-  container's mounts, network and user so paths match. See `docs/docker.md`.
+  container's mounts and user so paths match, on the network it shares with them (never the Docker
+  API network; the internal one when the egress allowlist is on). See `docs/docker.md`.
 - `kubernetes` — the controller creates a Pod per worker from a template. See `docs/kubernetes.md`.

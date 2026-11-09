@@ -10,7 +10,9 @@ import { useTempHome } from './helpers/temp-home.mjs';
 import { createLoopbackRegistry, createLoopbackSession } from './helpers/loopback-worker-session.mjs';
 import { superviseSpawn, missingOnWorker, engineOfSpawn } from '../src/core/engines/spawn.mjs';
 import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
-import { installExecutorFromEnv } from '../src/core/executor/controller.mjs';
+import { installExecutorFromEnv, keepsWorkerHome } from '../src/core/executor/controller.mjs';
+import { scriptSpawnError } from '../src/core/graph/script-runner.mjs';
+import { overlayEnv } from '../src/cli/container.mjs';
 import { spawnScript } from '../src/core/graph/script-runner.mjs';
 import { installExecutor, isRemoteExecutor, stagingBase, executorKind, executorConfigError, spawnsRemotely, sweepStaged } from '../src/core/executor/index.mjs';
 import { hostOfUrl, isLoopbackUrl, passThroughEnv, defaultWorkerEngine, startFailure, WORKER_PASS_THROUGH } from '../src/core/executor/shared.mjs';
@@ -143,6 +145,34 @@ test('what a worker container inherits is one rule for every backend', async () 
   assert.equal(await defaultWorkerEngine({ WORCA_WORKER_ENGINE: ' codex ' }), 'codex');
   assert.equal(await defaultWorkerEngine({ WORCA_K8S_DEFAULT_ENGINE: 'gemini', WORCA_WORKER_ENGINE: 'codex' }, ['WORCA_K8S_DEFAULT_ENGINE', 'WORCA_WORKER_ENGINE']), 'gemini');
   assert.deepEqual([startFailure('x').code, startFailure('x').errorClass], ['EWORKERSTART', 'network']);
+});
+
+test("a run's worker HOME outlives a crash when a resume can still continue it", () => {
+  assert.equal(keepsWorkerHome({ status: 'paused', resume_point: '{}' }), true);
+  assert.equal(keepsWorkerHome({ status: 'pausing' }), true);
+  assert.equal(keepsWorkerHome({ status: 'running' }), true);
+  // Boot maintenance has already relabelled a crashed `running` run `interrupted` when the sweep asks.
+  assert.equal(keepsWorkerHome({ status: 'interrupted', resume_point: '{"node":"n2"}' }), true, 'auto-resume will `--resume` its sessions');
+  assert.equal(keepsWorkerHome({ status: 'interrupted', resume_point: null }), false, 'nothing can continue it');
+  for (const status of ['done', 'stopped', 'error']) assert.equal(keepsWorkerHome({ status, resume_point: null }), false, status);
+  assert.equal(keepsWorkerHome(null), false, 'no such run any more');
+});
+
+test("a script's failed spawn keeps a worker's reason: an abort stays an abort, a lost worker stays retryable", () => {
+  const abort = Object.assign(new Error('aborted'), { name: 'AbortError' });
+  assert.equal(scriptSpawnError('lint', abort), abort, 'stopped while the worker was starting');
+  const lost = scriptSpawnError('lint', Object.assign(new Error('cannot start a worker for run:r: no image'), { code: 'EWORKERSTART', errorClass: 'network' }));
+  assert.match(lost.message, /script "lint": spawn failed — cannot start a worker/);
+  assert.deepEqual([lost.errorClass, lost.code], ['network', 'EWORKERSTART'], 'retried like an agent step');
+  const local = scriptSpawnError('lint', Object.assign(new Error('spawn sh ENOENT'), { code: 'ENOENT' }));
+  assert.deepEqual([local.errorClass, local.code], [null, 'ENOENT'], 'a local spawn failure is still not recoverable');
+});
+
+test('egress and workers together put the controller on the internal network, not the open one', () => {
+  assert.deepEqual(overlayEnv(['egress', 'workers']), { WORCA_UPLINK_NETWORK: 'internal' });
+  assert.deepEqual(overlayEnv(['workers']), {});
+  assert.deepEqual(overlayEnv(['egress']), {});
+  assert.deepEqual(overlayEnv(['egress', 'workers'], { already: 'mynet' }), {}, 'a value the operator set stays');
 });
 
 test('staged spawn folders older than this process are swept at boot; the ones a live spawn made are kept', () => {

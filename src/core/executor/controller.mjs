@@ -86,13 +86,24 @@ export function workersHealth() {
 }
 
 /**
+ * Whether a run's worker HOME (its engine sessions) is still needed, from its row: a run that is paused, or still
+ * marked live, or that a crash interrupted with its resume point intact. Boot maintenance relabels every stale
+ * `running` row `interrupted` BEFORE this is asked, and such a run resumes (auto-resume, or by hand) with `--resume`.
+ */
+export function keepsWorkerHome(row) {
+  if (!row) return false;
+  if (['paused', 'pausing', 'running'].includes(row.status)) return true;
+  return row.status === 'interrupted' && row.resume_point != null && row.resume_point !== '';
+}
+
+/**
  * Boot maintenance: with one controller, every worker still around at boot belonged to the previous
  * one; their HOMEs stay only for runs a resume will continue (`keepRun(id)` says which), and staged
  * spawn folders older than this process are nobody's. Returns
  * `{ workers: <reap summary> }` to merge into the boot summary, or `{}` under the local executor.
- * @param {{ keepRun: (id:string) => boolean, log?: Function, error?: Function }} o
+ * @param {{ rowOf?: (id:string) => object|null, keepRun?: (id:string) => boolean, log?: Function, error?: Function }} o
  */
-export async function reapWorkersAtBoot({ keepRun, log = (l) => console.log(l), error = (l) => console.error(l) }) {
+export async function reapWorkersAtBoot({ rowOf = null, keepRun = (id) => keepsWorkerHome(rowOf?.(id)), log = (l) => console.log(l), error = (l) => console.error(l) }) {
   if (!WORKERS) return {};
   const out = {};
   try { out.workers = await WORKERS.reapAtBoot(); } catch (err) { error(`[worca-ui] worker reap failed: ${err && err.message ? err.message : err}`); }

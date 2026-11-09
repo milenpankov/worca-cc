@@ -61,6 +61,16 @@ function scriptError(message, extra = {}) {
 function abortError() {
   return Object.assign(new Error('aborted'), { name: 'AbortError' });
 }
+/**
+ * What a script's failed spawn is thrown as. Locally that is a script error, never recoverable (D9). Under a remote
+ * executor the spawn can fail for the WORKER's reasons instead: a stop while the worker was starting stays an abort,
+ * and "no worker could start" / "the worker was lost" keep their network class, so the step is retried on a fresh
+ * worker like an agent's.
+ */
+export function scriptSpawnError(key, err) {
+  if (err?.name === 'AbortError') return err;
+  return scriptError(`script "${key}": spawn failed — ${err?.message || err}`, { ...(err?.errorClass ? { errorClass: err.errorClass } : {}), ...(err?.code ? { code: err.code } : {}) });
+}
 const lastLines = (text, n) => String(text || '').trimEnd().split('\n').slice(-n).join('\n');
 const secs = (ms) => (Math.round((ms || 0) / 100) / 10).toFixed(1);
 const upperSnake = (id) => String(id).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
@@ -567,7 +577,7 @@ export async function runScriptExecution(ctx) {
     if (run.timedOut) throw scriptError(`script "${key}" timed out after ${Math.round(timeoutMs / 1000)} s`);
   };
   const spawnOrThrow = async (o) => {
-    try { return await spawnScript(o); } catch (err) { throw scriptError(`script "${key}": spawn failed — ${err?.message || err}`); }
+    try { return await spawnScript(o); } catch (err) { throw scriptSpawnError(key, err); }
   };
 
   // The two HARNESSED runtimes differ only in what is spawned: same envelope on

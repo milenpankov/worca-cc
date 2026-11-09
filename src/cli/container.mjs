@@ -9,7 +9,7 @@
 // tests never spawn a runtime.
 
 import { spawnSync } from 'node:child_process';
-import { CONTROLLER_LABEL } from '../core/executor/shared.mjs';
+import { CONTROLLER_LABEL, INSTANCE_LABEL } from '../core/executor/shared.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -27,6 +27,13 @@ export const COMPOSE_SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), 
 export const OVERLAYS = Object.freeze(['egress', 'ssh', 'teams', 'clonein', 'workers']);
 /** The label every worker container the controller starts carries (src/core/executor/backends/docker.mjs). */
 export const WORKER_CONTAINER_LABEL = CONTROLLER_LABEL;   // the label the docker backend puts on every worker (executor/shared.mjs)
+export const WORKER_INSTANCE_LABEL = INSTANCE_LABEL;      // …and which installation it belongs to: the Compose project
+
+/** Compose variables an overlay COMBINATION needs. With the egress allowlist on, the controller shares the
+ *  internal network with its workers, never the open default one (compose.workers.yml WORCA_UPLINK_NETWORK). */
+export function overlayEnv(overlays = [], { already = null } = {}) {
+  return overlays.includes('egress') && overlays.includes('workers') && !already ? { WORCA_UPLINK_NETWORK: 'internal' } : {};
+}
 const STATE_FILE = '.worca-container.json';
 /** The proxy variables compose.yml interpolates into the box (case-sensitive: compose reads these names only). */
 const PROXY_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY'];
@@ -298,7 +305,11 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
     if (a.tag) composeEnv.WORCA_TAG = a.tag;
   };
   const files = () => composeFileArgs([...overlays, ...extra]);
-  const compose = (args, opts = {}) => exec(rt.bin, ['compose', ...files(), ...args], { cwd: dir, env: composeEnv, ...opts }).status;
+  const compose = (args, opts = {}) => {
+    const more = overlayEnv([...overlays, ...extra], { already: readEnvValue(dir, 'WORCA_UPLINK_NETWORK') || (composeEnv ?? process.env).WORCA_UPLINK_NETWORK });
+    const env = Object.keys(more).length ? { ...(composeEnv ?? process.env), ...more } : composeEnv;
+    return exec(rt.bin, ['compose', ...files(), ...args], { cwd: dir, env, ...opts }).status;
+  };
 
   if (a.verb === 'init' || a.verb === 'up') {
     const r = await initDir(dir, { projects: a.projects, exec });
@@ -329,7 +340,9 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
       const code = compose(['down']);
       // Worker containers (compose.workers.yml) are started by the controller, not by compose, so
       // `down` does not know them: whatever is left is removed by its label. Best effort.
-      const ps = exec(rt.bin, ['ps', '-aq', '--filter', `label=${WORKER_CONTAINER_LABEL}`], { cwd: dir, env: composeEnv, stdio: ['ignore', 'pipe', 'ignore'] });
+      // Only this installation's: another worca stack on the same host keeps its workers.
+      const instance = readEnvValue(dir, 'WORCA_INSTANCE_ID') || (composeEnv ?? process.env).COMPOSE_PROJECT_NAME || 'worca';
+      const ps = exec(rt.bin, ['ps', '-aq', '--filter', `label=${WORKER_INSTANCE_LABEL}=${instance}`], { cwd: dir, env: composeEnv, stdio: ['ignore', 'pipe', 'ignore'] });
       const ids = String(ps.stdout || '').split(/\s+/).filter(Boolean);
       if (ids.length) {
         exec(rt.bin, ['rm', '-f', ...ids], { cwd: dir, env: composeEnv, stdio: 'ignore' });

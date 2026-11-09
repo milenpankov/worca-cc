@@ -72,20 +72,27 @@ export function createWorkerRegistry({
 
   const mintToken = (key, ek, workerId) => {
     const token = randomBytes(32).toString('base64url');
-    tokens.set(token, { key, ek, workerId, mintedAt: Date.now(), used: false });
+    tokens.set(token, { key, ek, workerId, mintedAt: Date.now(), armedAt: null, used: false });
     return token;
   };
   const tokenOf = (req) => {
     const m = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization || ''));
     return m ? m[1] : null;
   };
+  // A token lives as long as the start it belongs to: while the backend is still bringing the container up (an image
+  // pull, a Pending pod — minutes on a cold node) it cannot expire, and once the container exists (`armedAt`) the
+  // worker has tokenTtlMs to present it. A start that ended, either way, takes its token with it.
+  const tokenDead = (t) => {
+    const e = entries.get(t.ek);
+    return t.used || !e || e.state !== 'starting' || (t.armedAt != null && Date.now() - t.armedAt > tokenTtlMs);
+  };
   const usableToken = (token) => {
     const t = tokens.get(token);
-    if (!t || t.used) return null;
-    if (Date.now() - t.mintedAt > tokenTtlMs) { tokens.delete(token); return null; }
+    if (!t) return null;
+    if (tokenDead(t)) { tokens.delete(token); return null; }
     return t;
   };
-  const sweepTokens = () => { for (const [k, t] of tokens) if (t.used || Date.now() - t.mintedAt > tokenTtlMs) tokens.delete(k); };
+  const sweepTokens = () => { for (const [k, t] of tokens) if (tokenDead(t)) tokens.delete(k); };
 
   /** The URL a worker is told to connect to: the operator's (a service name), else this listener. */
   const urlForWorkers = () => controllerUrl || `ws://${host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host}:${boundPort}`;
@@ -103,6 +110,8 @@ export function createWorkerRegistry({
       if (!hello || hello.type !== 'hello') { ws.close(4002, 'hello expected'); return; }
       if (hello.apiVersion !== PROTOCOL_VERSION) { ws.send(encodeFrame({ type: 'refuse', reason: `protocol ${hello.apiVersion} is not ${PROTOCOL_VERSION}` })); ws.close(4004, 'protocol'); return; }
       if (scopeKey(hello.scope) !== t.key || hello.workerId !== t.workerId) { ws.send(encodeFrame({ type: 'refuse', reason: 'scope or worker id does not match the token' })); ws.close(4001, 'scope mismatch'); return; }
+      // Re-checked now, not only at the upgrade: a release or a stop in between must not be undone by a late hello.
+      if (entries.get(t.ek) !== entry || entry.state !== 'starting') { ws.send(encodeFrame({ type: 'refuse', reason: 'this worker is no longer expected' })); ws.close(4001, 'no worker expected'); return; }
       t.used = true;
       tokens.delete(token);
       const session = createWorkerSession(ws, { workerId: hello.workerId, scope: hello.scope, capabilities: hello.capabilities, pid: hello.pid, pingMs, log, onRelay });
@@ -115,7 +124,8 @@ export function createWorkerRegistry({
         entries.delete(t.ek);
         if (entry.state !== 'closing') {
           log(`worker ${entry.workerId} for ${t.key} is gone: ${reason}`);
-          backend.remove(entry.handle, { reason: `lost: ${reason}` }).catch(() => {});
+          entry.abandoned = true;   // a handle the backend has not handed over yet is removed when it arrives (begin)
+          if (entry.handle) backend.remove(entry.handle, { reason: `lost: ${reason}` }).catch(() => {});
         }
       });
       const waiters = entry.waiters; entry.waiters = [];
@@ -156,6 +166,8 @@ export function createWorkerRegistry({
       .then((handle) => {
         entry.handle = handle;
         if (entry.abandoned || entry.state === 'closing') { backend.remove(handle, { reason: 'start abandoned' }).catch(() => {}); return; }
+        const t = tokens.get(entry.token);
+        if (t) t.armedAt = Date.now();   // the container exists: from now the token's time to live counts
         if (entry.state === 'starting') entry.timer = setTimeout(() => fail(entry, startFailure(`worker ${workerId} for ${key} did not connect within ${Math.round(startTimeoutMs / 1000)} s`)), startTimeoutMs);
       }, (err) => {
         if (entry.abandoned) return;
@@ -266,6 +278,8 @@ export function createWorkerRegistry({
       let handles = [];
       try { handles = await backend.listWorkers(); } catch (err) { log(`cannot list workers: ${err?.message || err}`); return { removed: 0 }; }
       let removed = 0;
+      // Maintenance runs while the server already serves: a worker THIS controller started a moment ago is not an orphan.
+      handles = handles.filter((h) => !(h?.own === true || (h?.bootId && h.bootId === bootId)));
       for (const h of handles) { try { await backend.remove(h, { reason: 'orphan at boot' }); removed += 1; } catch (err) { log(`cannot remove ${h?.workerId || h?.id || 'a worker'}: ${err?.message || err}`); } }
       if (removed) log(`removed ${removed} orphan worker(s) from a previous controller`);
       return { removed };

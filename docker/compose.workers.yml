@@ -24,7 +24,11 @@ services:
       WORCA_WORKER_MAX: ${WORCA_WORKER_MAX:-20}
       NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost},docker-proxy,worca,broker,egress
     networks:
-      - default
+      # The network the controller shares with its workers. With the egress overlay it must be
+      # `internal` (WORCA_UPLINK_NETWORK=internal; `worca container up --with egress,workers`
+      # sets it): on `default` the controller, and with it every worker, would have a direct
+      # route out and the allowlist would be advisory.
+      - ${WORCA_UPLINK_NETWORK:-default}
       - docker-proxy
 
   docker-proxy:
@@ -55,3 +59,5 @@ services:
 networks:
   docker-proxy:
     internal: true
+    labels:
+      worca.role: docker-api     # the backend never puts a worker on this network

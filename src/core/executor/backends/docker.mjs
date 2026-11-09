@@ -9,7 +9,7 @@
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, passThroughEnv, defaultWorkerEngine } from '../shared.mjs';
+import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, INSTANCE_LABEL, NETWORK_ROLE_LABEL, passThroughEnv, defaultWorkerEngine } from '../shared.mjs';
 
 export const DOCKER_API = 'v1.43';
 export { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL };
@@ -78,6 +78,7 @@ export function createDockerApi(endpoint, { api = DOCKER_API } = {}) {
     start: (id) => request('POST', `/containers/${encodeURIComponent(id)}/start`),
     remove: (id) => request('DELETE', `/containers/${encodeURIComponent(id)}?force=1&v=1`),
     list: (labels) => request('GET', `/containers/json?all=1&filters=${encodeURIComponent(JSON.stringify({ label: labels }))}`),
+    network: (name) => request('GET', `/networks/${encodeURIComponent(name)}`),
     logsTail: (id, n = 50) => request('GET', `/containers/${encodeURIComponent(id)}/logs?stdout=1&stderr=1&tail=${n}`, undefined, { raw: true }).then(demuxLogs).catch(() => ''),
   };
 }
@@ -140,6 +141,38 @@ export function workerEnvFor({ scopeKey, workerId, token, controllerUrl, idleMs,
   };
 }
 
+/**
+ * The network worker containers join, chosen from the controller's own. Never the Docker API network (the socket
+ * proxy's, labelled `worca.role=docker-api`): a worker there could drive the Engine. An INTERNAL network is
+ * preferred over an open one: with the egress overlay the controller is on `internal`, and its workers — where the
+ * agents run — must have no other route out than the allowlist proxy. `WORCA_WORKER_NETWORK` names one outright.
+ * When the Engine does not answer about a network, its name decides (`…_docker-proxy`, `…_internal`).
+ */
+export async function pickWorkerNetwork({ attached = [], inspect = async () => null, override = null, log = () => {} } = {}) {
+  const names = [...attached].sort();
+  const want = String(override || '').trim();
+  if (want) {
+    if (!names.includes(want)) throw new Error(`WORCA_WORKER_NETWORK=${want} is not a network of the controller's container (it is on: ${names.join(', ') || 'none'})`);
+    return want;
+  }
+  if (!names.length) return 'bridge';
+  const info = await Promise.all(names.map(async (name) => {
+    let meta = null;
+    try { meta = await inspect(name); } catch { meta = null; }
+    return {
+      name,
+      api: meta ? meta.Labels?.[NETWORK_ROLE_LABEL] === 'docker-api' : /(^|[_-])docker[_-]proxy$/.test(name),
+      internal: meta ? meta.Internal === true : /(^|[_-])internal$/.test(name),
+    };
+  }));
+  const usable = info.filter((n) => !n.api);
+  if (!usable.length) throw new Error(`the controller's container is only on the Docker API network (${names.join(', ')}): workers need a network they share with it`);
+  const confined = usable.filter((n) => n.internal);
+  const open = usable.filter((n) => !n.internal);
+  if (confined.length && open.length) log(`the controller is on ${open.map((n) => n.name).join(', ')} as well as the internal network ${confined[0].name}: its own traffic is not confined to the egress proxy (with the workers overlay, set WORCA_UPLINK_NETWORK=internal). Workers join ${confined[0].name} only`);
+  return (confined[0] || usable[0]).name;
+}
+
 export async function createDockerBackend({ env = process.env, log = () => {}, api = null, controllerId = null, bootId = `ctl-${process.pid}-${Date.now().toString(36)}` } = {}) {
   const docker = api || createDockerApi(dockerEndpoint(env));
   let version;
@@ -149,10 +182,13 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   try { self = await docker.inspect(selfId); } catch (err) { throw new Error(`cannot inspect the controller's own container "${selfId}" (${err.message}); set WORCA_CONTROLLER_CONTAINER to its name or id, and run the controller as a container`); }
   const template = {
     mounts: workerMountsFrom(self.Mounts),
-    network: Object.keys(self.NetworkSettings?.Networks || {})[0] || 'bridge',
+    network: await pickWorkerNetwork({ attached: Object.keys(self.NetworkSettings?.Networks || {}), inspect: (n) => docker.network(n), override: env.WORCA_WORKER_NETWORK, log }),
     user: String(env.WORCA_WORKER_USER || self.Config?.User || ''),
     image: self.Config?.Image || null,
   };
+  // Which installation these workers belong to: the Compose project (or WORCA_INSTANCE_ID), so a second worca stack
+  // on the same Docker host never lists or reaps them.
+  const instance = String(env.WORCA_INSTANCE_ID || self.Config?.Labels?.['com.docker.compose.project'] || String(self.Name || selfId).replace(/^\//, '')).trim() || 'worca';
   const pattern = String(env.WORCA_WORKER_IMAGE || '').trim() || null;
   const mem = parseBytes(env.WORCA_WORKER_MEM || '4g');
   const cpus = Number(env.WORCA_WORKER_CPUS || 2);
@@ -176,7 +212,7 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
         Image: image, Cmd: ['worca', 'worker'], Hostname: name.slice(0, 63),
         ...(template.user ? { User: template.user } : {}),
         Env: Object.entries(workerEnvFor({ scopeKey, workerId, token, controllerUrl, idleMs, engine, env })).map(([k, v]) => `${k}=${v}`),
-        Labels: { [CONTROLLER_LABEL]: bootId, [SCOPE_LABEL]: scopeKey, [WORKER_LABEL]: workerId, 'worca.engine': engine },
+        Labels: { [CONTROLLER_LABEL]: bootId, [INSTANCE_LABEL]: instance, [SCOPE_LABEL]: scopeKey, [WORKER_LABEL]: workerId, 'worca.engine': engine },
         HostConfig: {
           Mounts: template.mounts, NetworkMode: template.network,
           Tmpfs: { '/tmp': 'rw,size=2g' }, SecurityOpt: ['no-new-privileges:true'], CapDrop: ['ALL'],
@@ -220,10 +256,11 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
       catch (err) { if (err.status !== 404) throw err; }
     },
     async listWorkers() {
-      const rows = await docker.list([CONTROLLER_LABEL]);
-      return (rows || []).map((c) => ({ id: c.Id, workerId: c.Labels?.[WORKER_LABEL] || c.Id.slice(0, 12), name: (c.Names || [])[0]?.replace(/^\//, '') || c.Id.slice(0, 12), scopeKey: c.Labels?.[SCOPE_LABEL] || null, image: c.Image }));
+      const rows = await docker.list([`${INSTANCE_LABEL}=${instance}`]);   // this installation's only
+      return (rows || []).map((c) => ({ id: c.Id, workerId: c.Labels?.[WORKER_LABEL] || c.Id.slice(0, 12), name: (c.Names || [])[0]?.replace(/^\//, '') || c.Id.slice(0, 12), scopeKey: c.Labels?.[SCOPE_LABEL] || null, image: c.Image,
+        bootId: c.Labels?.[CONTROLLER_LABEL] || null, own: c.Labels?.[CONTROLLER_LABEL] === bootId }));
     },
-    describe() { return { kind: 'docker', endpoint: describeEndpoint(env), network: template.network, image: pattern || workerImageFor('<engine>', { pattern: null, controllerImage: template.image }), live: live.size }; },
+    describe() { return { kind: 'docker', endpoint: describeEndpoint(env), instance, network: template.network, image: pattern || workerImageFor('<engine>', { pattern: null, controllerImage: template.image }), live: live.size }; },
   };
 }
 

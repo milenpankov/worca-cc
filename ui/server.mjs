@@ -10015,7 +10015,7 @@ export async function bootMaintenance({ log } = {}) {
   }
   summary.agentGroups = await reapAgentGroupsAtBoot({ home: worcaHome });   // #1144: agents a SIGKILLed server/CLI left running
 
-  Object.assign(summary, await reapWorkersAtBoot({ keepRun: (id) => ['paused', 'pausing', 'running'].includes(findPipelineRowById(id)?.status) }));
+  Object.assign(summary, await reapWorkersAtBoot({ rowOf: findPipelineRowById }));   // worker containers of the previous controller; HOMEs of runs no resume will continue
 
   // Actions (issue #529): reap orphaned action processes, mark interrupted setups, release
   // until-pr checkouts whose PR closed (D11) and apply the checkout cap (D12).

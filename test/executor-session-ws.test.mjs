@@ -301,12 +301,52 @@ test('an exec that cannot be sent says why: a malformed request is EPROTO, a wor
   assert.deepEqual([gone.code, gone.errorClass], ['EWORKERLOST', 'network'], 'retried on a fresh worker by the failure policy');
 });
 
-test('reapAtBoot removes every worker the backend still lists', async () => {
+test('reapAtBoot removes every worker the backend still lists, except the ones this controller started', async () => {
   const removed = [];
-  const b = { async start() { throw new Error('unused'); }, async remove(h, o) { removed.push([h.workerId, o.reason]); }, async listWorkers() { return [{ workerId: 'old-1' }, { workerId: 'old-2' }]; }, describe() { return {}; } };
-  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, log: () => {} });
-  assert.deepEqual(await reg2.reapAtBoot(), { removed: 2 });
+  const listed = [{ workerId: 'old-1', bootId: 'ctl-previous' }, { workerId: 'old-2' }, { workerId: 'mine-1', bootId: 'ctl-now' }, { workerId: 'mine-2', own: true }];
+  const b = { async start() { throw new Error('unused'); }, async remove(h, o) { removed.push([h.workerId, o.reason]); }, async listWorkers() { return listed; }, describe() { return {}; } };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, bootId: 'ctl-now', log: () => {} });
+  assert.deepEqual(await reg2.reapAtBoot(), { removed: 2 }, 'maintenance runs while the server serves: a worker of this boot is not an orphan');
   assert.deepEqual(removed, [['old-1', 'orphan at boot'], ['old-2', 'orphan at boot']]);
+});
+
+test('a worker whose container takes longer to come up than the token lives still gets in; the time to live counts from the container', async () => {
+  // A cold node pulling the image: the backend needs far longer than tokenTtlMs before the worker process even exists.
+  const b2 = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS, beforeStart: () => new Promise((r) => setTimeout(r, 200)) });
+  const reg2 = createWorkerRegistry({ backend: b2, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, tokenTtlMs: 40, pingMs: 200, log: () => {} });
+  await reg2.listen();
+  try {
+    const s = await reg2.acquire({ kind: 'run', id: 'slow' });
+    assert.equal(s.scope.id, 'slow');
+  } finally { await reg2.closeAll(); }
+});
+
+test('a hello that arrives after its start was released is refused: a release is never undone by a late worker', async () => {
+  const captured = [];
+  const removed = [];
+  const b = { start(o) { captured.push(o); return new Promise(() => {}); }, async remove(h) { removed.push(h); }, async listWorkers() { return []; }, describe() { return {}; } };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, log: () => {} });
+  await reg2.listen();
+  try {
+    const scope = { kind: 'run', id: 'late' };
+    const waiting = reg2.acquire(scope).then(() => null, (e) => e);
+    for (let i = 0; i < 100 && !captured.length; i++) await new Promise((r) => setTimeout(r, 5));
+    const { token, workerId } = captured[0];
+    // The worker's socket is up (the upgrade passed while the start was live)…
+    const ws = new WebSocket(`${reg2.controllerUrl}/worker`, { headers: { authorization: `Bearer ${token}` } });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+    // …the run is released before its hello…
+    await reg2.release(scope, { reason: 'paused' });
+    assert.match((await waiting).message, /released before it connected/);
+    // …and the hello comes late.
+    const closed = new Promise((resolve) => ws.on('close', (code) => resolve(code)));
+    const frames = [];
+    ws.on('message', (d) => frames.push(JSON.parse(String(d))));
+    ws.send(encodeFrame({ type: 'hello', apiVersion: PROTOCOL_VERSION, workerId, scope, pid: 1, capabilities: CAPS }));
+    assert.equal(await closed, 4001);
+    assert.deepEqual(frames.map((f) => f.type), ['refuse']);
+    assert.deepEqual(reg2.snapshot(), [], 'the released worker did not come back as ready');
+  } finally { await reg2.closeAll(); }
 });
 
 test('a backend that fails to start a worker makes acquire reject with a network-class error', async () => {

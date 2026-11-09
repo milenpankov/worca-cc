@@ -1499,7 +1499,7 @@ export class RunHarness extends EventEmitter {
    * credential broker): the whole loop runs inside that async context.
    */
   run() {
-    return withBillTo(this.opts.startedBy || currentBillTo(), () => withExecutorScope(this._executorScope, () => this._run()));
+    return withBillTo(this.opts.startedBy || currentBillTo(), () => this._inExecutorScope(() => this._run()));
   }
 
   /**
@@ -1507,18 +1507,28 @@ export class RunHarness extends EventEmitter {
    * the run, so under a remote executor it goes to the run's worker. Evaluated per spawn — the
    * id exists once createPipeline has run, which is before the first agent or script spawns.
    */
-  _executorScope = () => (this.pipeline?.id ? { kind: 'run', id: this.pipeline.id, engine: this.claude?.engine || 'claude' } : null);
+  _executorScope = () => (!this._executorClosed && this.pipeline?.id ? { kind: 'run', id: this.pipeline.id, engine: this.claude?.engine || 'claude' } : null);
+
+  /** Run one segment (run, resume, stop of a paused run) inside the run's executor scope. The scope is open for
+   *  the segment and closes when its worker is released: work the segment left behind in its async context (a
+   *  title still being generated, a listener's timer) then spawns on the controller, like any spawn outside a
+   *  scope, instead of starting a fresh worker for a run that is over. */
+  _inExecutorScope(fn) {
+    this._executorClosed = false;
+    return withExecutorScope(this._executorScope, fn);
+  }
 
   /**
    * Release the run's worker (no-op under the local executor). The worker's HOME on the shared
    * volume — where the engine keeps the run's sessions — stays across a pause so a resume on a
    * fresh worker can `--resume` them; it goes with every other end.
    */
-  async _releaseWorker() {
-    const id = this.pipeline?.id;
+  async _releaseWorker({ keepHome = null } = {}) {
+    const id = this.pipeline?.id || this.state?.id;
+    this._executorClosed = true;   // before the await: nothing started from here on belongs on the run's worker
     if (!id) return;
     const paused = this.state.status === 'paused' || this.state.status === 'pausing';
-    try { await releaseWorker({ kind: 'run', id }, { reason: this.state.status, keepHome: paused }); }
+    try { await releaseWorker({ kind: 'run', id }, { reason: this.state.status, keepHome: keepHome ?? paused }); }
     catch (err) { try { this._log('executor', 'warn', `worker release: ${err?.message || err}`); } catch { /* best effort */ } }
   }
 
@@ -1963,7 +1973,7 @@ export class RunHarness extends EventEmitter {
     // B4: the person who resumed it owns it for Away mode from now on (only with per-person Away).
     if (this._night && awayPerPerson() && awayPersonKey(who)) this._night.owner = who;
     // Pays: whoever resumed. Runs as: the starter's agent user, whose HOME holds the sessions.
-    return withBillTo(who && who !== 'local' ? who : (starter || who), () => withExecutorScope(this._executorScope, () => this._resume()), { owner: starter || who });
+    return withBillTo(who && who !== 'local' ? who : (starter || who), () => this._inExecutorScope(() => this._resume()), { owner: starter || who });
   }
 
   async _resume() {
@@ -2504,7 +2514,7 @@ export class RunHarness extends EventEmitter {
     const starter = this.resumeOpts?.row?.started_by ?? this.opts.startedBy ?? null;
     // resume()'s identities: billed to whoever asked, else the starter. A stop spawns no agent, so
     // the owner never picks an OS user here: the teardown's git runs as this process.
-    return withBillTo(who && who !== 'local' ? who : (starter || who), () => withExecutorScope(this._executorScope, () => this._stopPaused(by)), { owner: starter || who });
+    return withBillTo(who && who !== 'local' ? who : (starter || who), () => this._inExecutorScope(() => this._stopPaused(by)), { owner: starter || who });
   }
 
   async _stopPaused(by) {
@@ -2554,6 +2564,8 @@ export class RunHarness extends EventEmitter {
         await this._teardownRunRoot().catch(() => {});
         await this._checkBaseAfterRun().catch((e) => this._log('git', 'warn', `base check: ${e?.message || e}`));   // #620
       }
+      // The pause kept the run's worker HOME (its engine sessions, a copied login) for a resume that will not come.
+      await this._releaseWorker({ keepHome: false });
       await this._closeTelemetry();
       await this.logWriter.close().catch(() => {}); // last, to capture the teardown's log lines
     }

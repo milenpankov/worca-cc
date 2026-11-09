@@ -192,6 +192,13 @@ test('engines: engines.env pins every engine but claude, install.sh has an arm p
       assert.match(wf, /IMAGE_WORKER: ghcr\.io\/sinishadjukic\/worca-worker/);
       assert.match(wf, /target: \$\{\{ matrix\.target \}\}/);
       assert.match(wf, /continue-on-error: \$\{\{ matrix\.fragile \}\}/, 'goose and cursor rows do not hold the release');
+      // The workers overlay never forces the open network next to the egress allowlist, and marks the Docker API network.
+      const workers = read('docker/compose.workers.yml');
+      assert.match(workers, /networks:\n(\s+#[^\n]*\n)+\s+- \$\{WORCA_UPLINK_NETWORK:-default\}\n\s+- docker-proxy/);
+      assert.doesNotMatch(workers, /^\s+- default$/m);
+      assert.match(workers, /docker-proxy:\n\s+internal: true\n\s+labels:\n\s+worca\.role: docker-api/);
+      // The worca image run as a worker (WORCA_WORKER_IMAGE=self) builds its CA bundle before it execs.
+      assert.match(read('docker/entrypoint.sh'), /\[ "\$\{2:-\}" = "worker" \]; then\n(\s+#[^\n]*\n)+\s+worca_corporate_ca\n\s+exec "\$@"/);
       // …but a row that built for one architecture only must not publish a tag the other cannot pull.
       const archs = (/const archs = \[([^\]]*)\]/.exec(wf)?.[1].match(/arch: '/g) || []).length;
       assert.equal(archs, 2);

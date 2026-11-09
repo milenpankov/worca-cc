@@ -8,10 +8,7 @@ import http from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  createDockerBackend, createDockerApi, dockerEndpoint, parseBytes, workerMountsFrom, workerImageFor, workerEnvFor, demuxLogs,
-  CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL,
-} from '../src/core/executor/backends/docker.mjs';
+import { createDockerBackend, createDockerApi, dockerEndpoint, parseBytes, workerMountsFrom, workerImageFor, workerEnvFor, demuxLogs, CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, pickWorkerNetwork } from '../src/core/executor/backends/docker.mjs';
 import { seedClaudeLogin } from '../src/worker/main.mjs';
 
 const SELF = 'abc123';
@@ -59,7 +56,7 @@ function fakeDocker({ dieAtOnce = false, imageMissing = false } = {}) {
       }
       if (req.method === 'GET' && path === '/containers/json') {
         const want = JSON.parse(url.searchParams.get('filters')).label;
-        const rows = [...containers.entries()].filter(([, c]) => want.every((l) => c.spec.Labels && l in c.spec.Labels)).map(([id, c]) => ({ Id: id, Names: [`/${c.name}`], Image: c.spec.Image, Labels: c.spec.Labels }));
+        const rows = [...containers.entries()].filter(([, c]) => want.every((l) => { const [k, v] = l.split(/=(.*)/s); return c.spec.Labels && k in c.spec.Labels && (v === undefined || c.spec.Labels[k] === v); })).map(([id, c]) => ({ Id: id, Names: [`/${c.name}`], Image: c.spec.Image, Labels: c.spec.Labels }));
         return json(200, rows);
       }
       json(404, { message: `no such route ${req.method} ${path}` });
@@ -127,6 +124,7 @@ test('the backend replicates the controller container and runs a worker on the s
     assert.equal(c.spec.HostConfig.Init, true);
     assert.deepEqual(c.spec.HostConfig.Mounts.map((m) => m.Target), ['/worca', '/seed/claude', '/Users/me/dev', '/etc/worca/ca.pem']);
     assert.equal(c.spec.Labels[SCOPE_LABEL], 'run:r-1');
+    assert.equal(c.spec.Labels['worca.instance'], 'worca-worca-1', 'which installation the worker belongs to (the Compose project, else the controller container)');
     assert.equal(c.spec.Labels[WORKER_LABEL], 'w-run-abcd1234');
     assert.ok(c.spec.Labels[CONTROLLER_LABEL]);
     assert.ok(c.spec.Env.includes('WORCA_WORKER_TOKEN=tok'));
@@ -134,6 +132,11 @@ test('the backend replicates the controller container and runs a worker on the s
     assert.ok(!c.spec.Env.some((e) => e.startsWith('GH_TOKEN=')));
     const listed = await b.listWorkers();
     assert.deepEqual(listed.map((w) => [w.workerId, w.scopeKey]), [['w-run-abcd1234', 'run:r-1']]);
+    assert.equal(listed[0].own, true, 'started by this controller process: boot maintenance must not reap it');
+    // Another worca stack on the same Docker host: its workers are not ours to list, reap or remove.
+    d.containers.set('foreign00000', { spec: { Image: 'x', Labels: { [CONTROLLER_LABEL]: 'ctl-other', 'worca.instance': 'other-stack', [WORKER_LABEL]: 'w-run-other', [SCOPE_LABEL]: 'run:o' } }, name: 'worca-worker-run-o', running: true, exited: false });
+    assert.deepEqual((await b.listWorkers()).map((w) => w.workerId), ['w-run-abcd1234']);
+    d.containers.delete('foreign00000');
     await b.remove(h, { reason: 'done' });
     assert.equal(d.containers.size, 0);
     assert.deepEqual(await b.listWorkers(), []);
@@ -145,6 +148,30 @@ test('the backend replicates the controller container and runs a worker on the s
     assert.equal(await b.classFor(null), 'ghcr.io/sinishadjukic/worca-worker:1.20.0-claude');
     await b.remove(h2, { reason: 'done' });
   } finally { await d.close(); }
+});
+
+test('the worker network: never the Docker API one, an internal one before an open one, or the one named', async () => {
+  const nets = {
+    worca_default: { Internal: false, Labels: {} },
+    'worca_docker-proxy': { Internal: true, Labels: { 'worca.role': 'docker-api' } },
+    worca_internal: { Internal: true, Labels: {} },
+  };
+  const inspect = async (n) => nets[n];
+  const pick = (attached, o = {}) => pickWorkerNetwork({ attached, inspect, ...o });
+  assert.equal(await pick(['worca_default', 'worca_docker-proxy']), 'worca_default', 'the workers overlay alone');
+  assert.equal(await pick(['worca_docker-proxy', 'worca_internal']), 'worca_internal', 'with the egress allowlist: workers have no route but the proxy');
+  // A controller that is (wrongly) on the open network too: workers still join only the internal one, and it says so.
+  const logs = [];
+  assert.equal(await pick(['worca_default', 'worca_docker-proxy', 'worca_internal'], { log: (l) => logs.push(l) }), 'worca_internal');
+  assert.match(logs[0], /the controller is on worca_default as well as the internal network worca_internal: .*WORCA_UPLINK_NETWORK=internal/);
+  await assert.rejects(pick(['worca_docker-proxy']), /only on the Docker API network/);
+  assert.equal(await pick(['a', 'worca_default'], { override: 'worca_default' }), 'worca_default');
+  await assert.rejects(pick(['worca_default'], { override: 'nope' }), /WORCA_WORKER_NETWORK=nope is not a network of the controller's container/);
+  assert.equal(await pick([]), 'bridge');
+  // An Engine that does not answer about networks (a strict socket proxy): the names decide.
+  const blind = (attached) => pickWorkerNetwork({ attached, inspect: async () => { throw new Error('403'); } });
+  assert.equal(await blind(['worca_default', 'worca_docker-proxy']), 'worca_default');
+  assert.equal(await blind(['worca_default', 'worca_docker-proxy', 'worca_internal']), 'worca_internal');
 });
 
 test('a worker container that exits at once is reported with its log tail and removed; a missing image names itself', async () => {

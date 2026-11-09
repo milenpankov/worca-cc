@@ -49,4 +49,16 @@ test('a run under a remote executor: scoped spawns on the run\'s worker, release
   assert.ok(outputs.some((l) => l.startsWith('node:')), 'the stubs\' processes ran on the loopback session');
   assert.deepEqual(registry.released, [{ scope: { kind: 'run', id }, reason: 'done' }], 'released once, at the end, with the terminal status');
   assert.equal(existsSync(homeMade), false, 'the worker HOME went with the run');
+  // The scope closed with the worker: what the run left behind in its async context (a title still being generated)
+  // spawns on the controller from here on, instead of starting a fresh worker for a finished run.
+  assert.equal(orch._executorScope(), null);
+  assert.deepEqual(await orch._inExecutorScope(() => currentExecutorScope()), { kind: 'run', id, engine: 'claude' }, 'a later segment (a resume) opens it again');
+  // Stopping a PAUSED run removes the HOME the pause kept, whatever the status reads at that moment.
+  mkdirSync(homeMade, { recursive: true });
+  orch.state.status = 'paused';
+  await orch._releaseWorker();
+  assert.equal(existsSync(homeMade), true, 'a pause keeps the sessions for its resume');
+  await orch._releaseWorker({ keepHome: false });
+  assert.equal(existsSync(homeMade), false);
+  assert.match(orch._stopPaused.toString(), /await this\._releaseWorker\(\{ keepHome: false \}\)/, 'the stop of a paused run releases its worker and HOME');
 });

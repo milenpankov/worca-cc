@@ -342,6 +342,9 @@ URL from `docker compose logs teams-tunnel`.
 | `WORCA_WORKER_MEM`, `WORCA_WORKER_CPUS` | `4g`, `2` | each worker container's memory and CPU limits |
 | `WORCA_WORKER_MAX` | `20` | worker containers at once |
 | `WORCA_WORKER_PORT` | `4319` | the controller's worker listener on the compose network; never published |
+| `WORCA_UPLINK_NETWORK` | `default` | with the `workers` overlay: the network the controller shares with its workers; `internal` together with the egress overlay (`worca container up --with egress,workers` sets it) |
+| `WORCA_WORKER_NETWORK` | chosen | the controller network workers join, when the automatic choice (never the Docker API one, an internal one first) is not the one you want |
+| `WORCA_INSTANCE_ID` | the Compose project | which installation worker containers belong to, when two share a Docker host |
 | `WORCA_PORT` | `4317` | host loopback port |
 | `TZ` | `UTC` | **scheduled runs use this clock** |
 | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` | | commit identity |
@@ -550,3 +553,13 @@ What the overlay does:
 - The broker overlay combines with it (`--with workers,egress` and `-f compose.broker.yml`): workers
   reach the broker by its service name, and the egress sidecar's proxy address rides through to
   them (the in-process `WORCA_EGRESS_MODE` proxy does not — use the sidecar).
+- **Networks.** Workers join one of the controller's networks, chosen on purpose: never the Docker
+  API network (the socket proxy's), and an `internal` network before an open one. With the egress
+  overlay that is the `internal` network, so an agent on a worker has no route out but the
+  allowlist proxy. `worca container up --with egress,workers` also keeps the controller itself off
+  the open network; with plain `docker compose -f … -f compose.egress.yml -f compose.workers.yml`
+  set `WORCA_UPLINK_NETWORK=internal` in `.env` for the same (the controller warns at boot when
+  it is on both). `WORCA_WORKER_NETWORK` names the workers' network outright.
+- **More than one installation on a host.** Workers carry their installation (the Compose project,
+  or `WORCA_INSTANCE_ID`): a controller lists and reaps only its own, and `worca container down`
+  removes only its own.

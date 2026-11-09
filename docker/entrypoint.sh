@@ -36,6 +36,9 @@ agent_gitconfig() { # <user> <home>
 # no agent users (the container is the isolation), no login report. The controller's backend
 # gave it its assignment in the environment; the shared volume is already laid out.
 if [ "${1:-}" = "worca" ] && [ "${2:-}" = "worker" ]; then
+  # WORCA_WORKER_IMAGE=self: this image as the worker. Its children get THIS container's CA bundle
+  # (the controller's path does not exist here), so it is built before the exec, as in the worker image.
+  worca_corporate_ca
   exec "$@"
 fi
 

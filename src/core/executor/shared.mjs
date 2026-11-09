@@ -8,6 +8,11 @@
 export const CONTROLLER_LABEL = 'worca.controller';
 export const SCOPE_LABEL = 'worca.scope';
 export const WORKER_LABEL = 'worca.worker';
+/** Which worca installation a worker container belongs to (the Compose project, or WORCA_INSTANCE_ID): two stacks
+ *  on one Docker host never list, reap or remove each other's workers. */
+export const INSTANCE_LABEL = 'worca.instance';
+/** On a Docker NETWORK: `worca.role=docker-api` marks the one the socket proxy lives on. No worker is ever put there. */
+export const NETWORK_ROLE_LABEL = 'worca.role';
 
 /** A worker that could not be started: the harness's failure policy treats it like a lost network. */
 export function startFailure(message, extra = {}) {

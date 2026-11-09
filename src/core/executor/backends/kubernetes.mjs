@@ -40,7 +40,7 @@ import { createK8sApi, K8sApiError } from './k8s-api.mjs';
 import { startFailure, passThroughEnv, defaultWorkerEngine } from '../shared.mjs';
 import {
   renderPodSpec, resolveImage, normalizeVariant, podName, workerSelector, workerContainer, assertAllowedEnv,
-  DEFAULT_IMAGE_PATTERN, ANNOTATION_SCOPE, LABEL_ENGINE,
+  DEFAULT_IMAGE_PATTERN, ANNOTATION_SCOPE, LABEL_ENGINE, LABEL_BOOT, scopeLabel,
 } from './k8s-pod-spec.mjs';
 
 export const DEFAULT_POD_TEMPLATE = '/etc/worca/worker-pod.json';
@@ -162,6 +162,8 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
       namespace,
       scopeKey: scopeKey || pod?.metadata?.annotations?.[ANNOTATION_SCOPE] || envVal('WORCA_WORKER_SCOPE') || null,
       engine: engine || pod?.metadata?.labels?.[LABEL_ENGINE] || null,
+      bootId: pod?.metadata?.labels?.[LABEL_BOOT] || null,
+      own: !!bootId && pod?.metadata?.labels?.[LABEL_BOOT] === scopeLabel(bootId),   // started by this controller process: never an orphan
       image: c?.image || null,
       startedAt: pod?.metadata?.creationTimestamp ? Date.parse(pod.metadata.creationTimestamp) || Date.now() : Date.now(),
     };
