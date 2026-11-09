@@ -199,6 +199,11 @@ makes the pushes and pull requests, and agents never see a Git credential. The c
 needs the model credential too for its own small calls (run titles and the like), so the same
 Secret may serve both `secrets.existingSecret` and `worker.credentialsSecret`.
 
+Other engines take their credential the same way — a variable in `worker.credentialsSecret`
+(`OPENAI_API_KEY`, `GEMINI_API_KEY`, `CURSOR_API_KEY`, `COPILOT_GITHUB_TOKEN`, …): the table and
+the limitation (no interactive sign-in persists on a worker) are in
+[workers.md › Credentials on workers](workers.md#credentials-on-workers).
+
 A long-lived token comes from `claude setup-token`, which prints its whole dialog, not just the
 token: paste the `sk-ant-oat01-…` line, or filter it:
 

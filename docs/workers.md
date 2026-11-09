@@ -59,6 +59,38 @@ runs while Worca is idle; ten concurrent runs are ten worker containers.
 
 `/api/health` carries an `executor` object under a remote executor.
 
+## Credentials on workers
+
+A worker's HOME (`<worcaHome>/worker-homes/<kind>/<id>`) is created for one run or one chat thread
+and removed afterwards, so nothing an engine stores there outlives the worker. Two things reach
+an agent on a worker:
+
+- **The controller's environment.** The controller composes every spawn's environment and sends
+  it with the exec (minus its own secrets: the worker token, the broker secret, the GitHub
+  tokens it keeps for pushes and pull requests). A credential set where the controller runs —
+  `.env` on Compose, the controller's Secret on Kubernetes — is therefore in the agent's
+  environment on the worker too, unless the run's guardrail set scrubs the environment.
+- **The worker's own environment.** On Kubernetes, `worker.credentialsSecret` is the worker pod's
+  `envFrom`; on Compose the controller's `.env` is the only source.
+
+What that means per engine:
+
+| Engine | Works on a worker | Does not persist on a worker |
+| --- | --- | --- |
+| Claude Code | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`; the [credential broker](credential-broker.md); on Compose also the interactive login (`worca container login`), which workers copy once from the controller's `claude-config` volume (`/seed/claude`) | — |
+| Codex | `OPENAI_API_KEY`, or an OpenAI-compatible endpoint with its key set up on the Models page | the ChatGPT sign-in (`codex login`) |
+| Gemini CLI | `GEMINI_API_KEY` (or Vertex AI's variables) | the Google account sign-in |
+| Qwen Code | a provider in the environment (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`) | its OAuth sign-in |
+| GitHub Copilot CLI | `COPILOT_GITHUB_TOKEN` | the device-code sign-in |
+| Cursor | `CURSOR_API_KEY` | `cursor-agent login` |
+| Goose | the provider's key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, …) with the provider and model named as [models.md](models.md#goose) describes | `goose configure` |
+| OpenCode | the provider's key in the environment | `opencode auth login` |
+
+Each engine's section in [models.md](models.md) has the exact variables and the models to pick.
+Seeding other engines' sign-ins the way Claude's is seeded is not implemented. The Compose option
+of a Claude key as a compose secret read through `apiKeyHelper` is for the one-container box; on
+workers use the token or the broker.
+
 ## What is different under a remote executor
 
 - **Chat tools** run on the controller: the turn's MCP child posts each line to the worker's

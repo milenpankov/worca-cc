@@ -338,6 +338,10 @@ URL from `docker compose logs teams-tunnel`.
 | `WORCA_PROJECTS_MOUNT` | same as above | mount it elsewhere inside (loses parity) |
 | `WORCA_TAG` | `latest` | image tag |
 | `WORCA_IMAGE` | `ghcr.io/sinishadjukic/worca` | image name without the tag (a mirror, or `worca` for a local build); the default worker image is `<WORCA_IMAGE>-worker` |
+| `WORCA_WORKER_IMAGE` | `<WORCA_IMAGE>-worker:<tag>-{engine}` | with the `workers` overlay: the worker image per engine (`{engine}` is filled per run); `self` = the worca image ([Workers](#workers-agents-in-their-own-containers)) |
+| `WORCA_WORKER_MEM`, `WORCA_WORKER_CPUS` | `4g`, `2` | each worker container's memory and CPU limits |
+| `WORCA_WORKER_MAX` | `20` | worker containers at once |
+| `WORCA_WORKER_PORT` | `4319` | the controller's worker listener on the compose network; never published |
 | `WORCA_PORT` | `4317` | host loopback port |
 | `TZ` | `UTC` | **scheduled runs use this clock** |
 | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` | | commit identity |
@@ -506,6 +510,21 @@ worca container up --with workers
 # or
 docker compose -f compose.yml -f compose.workers.yml up -d
 ```
+
+Step by step, the first time:
+
+1. **Pull the worker image for the engine your runs use** (the controller does not pull):
+   `docker pull ghcr.io/sinishadjukic/worca-worker:latest-claude` — `-codex`, `-gemini`, … for
+   other engines, `-all` for every engine in one image (then `WORCA_WORKER_IMAGE=…-all` in
+   `.env`), `-full` variants with the extra toolchains. Match the controller's `WORCA_TAG`.
+2. **Start with the overlay** (above). `worca container status` shows `worca` and `docker-proxy`
+   up; `/api/health` through `curl -s localhost:4317/api/health` has an `executor` object.
+3. **Log Claude Code in** as without workers (`worca container login`, or a token or key in
+   `.env`): workers copy the login from the controller's volume, and `.env` credentials reach
+   agents on workers too. Other engines need their credential in `.env`:
+   [Credentials on workers](workers.md#credentials-on-workers).
+4. **Start a run or a chat.** `docker ps --filter label=worca.scope` lists the worker
+   containers while they live; the controller's log names each one it starts and removes.
 
 What the overlay does:
 
