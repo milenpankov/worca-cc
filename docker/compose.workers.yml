@@ -7,7 +7,7 @@
 # starts one worker container per run and per chat through the Docker Engine, replicating its own
 # mounts, network and user so every path matches. It reaches the Engine through a socket proxy that
 # allows exactly what it needs (create/start/inspect/remove containers, list networks), never the
-# raw socket. Worker images: ghcr.io/sinishadjukic/worca-worker:<tag>-<engine>; set
+# raw socket. Worker images: <WORCA_IMAGE>-worker:<tag>-<engine> (ghcr.io/sinishadjukic/worca-worker by default); set
 # WORCA_WORKER_IMAGE=self to run workers from the worca image itself (Claude Code only).
 services:
   worca:
@@ -18,7 +18,7 @@ services:
       WORCA_DOCKER_HOST: tcp://docker-proxy:2375
       WORCA_WORKER_PORT: ${WORCA_WORKER_PORT:-4319}
       WORCA_CONTROLLER_URL: ws://worca:${WORCA_WORKER_PORT:-4319}
-      WORCA_WORKER_IMAGE: ${WORCA_WORKER_IMAGE:-ghcr.io/sinishadjukic/worca-worker:${WORCA_TAG:-latest}-{engine}}
+      WORCA_WORKER_IMAGE: ${WORCA_WORKER_IMAGE:-${WORCA_IMAGE:-ghcr.io/sinishadjukic/worca}-worker:${WORCA_TAG:-latest}-{engine}}
       WORCA_WORKER_MEM: ${WORCA_WORKER_MEM:-4g}
       WORCA_WORKER_CPUS: ${WORCA_WORKER_CPUS:-2}
       WORCA_WORKER_MAX: ${WORCA_WORKER_MAX:-20}

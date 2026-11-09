@@ -337,6 +337,7 @@ URL from `docker compose logs teams-tunnel`.
 | `WORCA_PROJECTS` | `$HOME/dev` | host folder with your repos, mounted at the same path |
 | `WORCA_PROJECTS_MOUNT` | same as above | mount it elsewhere inside (loses parity) |
 | `WORCA_TAG` | `latest` | image tag |
+| `WORCA_IMAGE` | `ghcr.io/sinishadjukic/worca` | image name without the tag (a mirror, or `worca` for a local build); the default worker image is `<WORCA_IMAGE>-worker` |
 | `WORCA_PORT` | `4317` | host loopback port |
 | `TZ` | `UTC` | **scheduled runs use this clock** |
 | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` | | commit identity |
@@ -519,8 +520,12 @@ What the overlay does:
   resolve), the same user. The docker socket is never passed on; the Claude login volume rides
   read-only at `/seed/claude`, from which a fresh worker copies the login once.
 - Worker images are per engine: `WORCA_WORKER_IMAGE` (default
-  `ghcr.io/sinishadjukic/worca-worker:<tag>-{engine}`); `WORCA_WORKER_IMAGE=self` runs workers from
-  the worca image itself (Claude Code only). Pull the worker image for your engine once.
+  `<WORCA_IMAGE>-worker:<tag>-{engine}`, i.e. `ghcr.io/sinishadjukic/worca-worker:<tag>-{engine}`);
+  `WORCA_WORKER_IMAGE=self` runs workers from the worca image itself (Claude Code only). Pull the
+  worker image for your engine once: the controller does not pull, and a worker whose image lacks
+  the run's engine refuses the first spawn naming the image to fix. The controller's own engine
+  checks (`GET /api/engines`, the setup wizard) report non-Claude engines as *runs on the worker
+  image — not checked on the controller*: the controller image only ships Claude Code.
 - `WORCA_WORKER_MEM` (4g), `WORCA_WORKER_CPUS` (2) and `WORCA_WORKER_MAX` (20) bound each worker and
   how many run at once; `worca container down` removes any worker still around.
 - The broker overlay combines with it (`--with workers,egress` and `-f compose.broker.yml`): workers

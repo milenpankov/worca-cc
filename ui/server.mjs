@@ -723,7 +723,7 @@ const VOICE_VENDOR = [
 const PORT = process.env.PORT === '0' ? 0 : Number(process.env.PORT) || DEFAULT_UI_PORT;
 // Bind to loopback by default (S1). WORCA_HOST=0.0.0.0 (the worca image) still
 // answers only callers on this machine: local mode needs a loopback Host AND a
-// loopback TCP peer (or Docker's gateway, in the image), so a network caller
+// loopback TCP peer (or the container network's gateway, in the image), so a network caller
 // sending `Host: localhost` gets a 403 (G4, createPeerGuard). Anything wider
 // goes through remote access below.
 const HOST = process.env.WORCA_HOST || '127.0.0.1';
