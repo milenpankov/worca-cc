@@ -43,7 +43,7 @@ app.post('/api/ask/relay', async (req, res) => {
   if (!askRelays.has(token)) return res.status(403).json({ error: 'relay: unknown or finished turn' });
   const line = req.body && typeof req.body.line === 'string' ? req.body.line : null;
   if (line === null) return badRequest(res, 'relay: line is required');
-  // The same answerer a worker's `relay` frame reaches (server.mjs relayAskLine).
+  // The same answerer a worker's `relay` frame reaches (src/core/executor/controller.mjs relayAskLine).
   const r = await relayAskLine(token, line);
   if (r.error) return res.status(403).json({ error: r.error });
   res.json({ out: r.lines });
