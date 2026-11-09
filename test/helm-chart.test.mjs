@@ -51,17 +51,29 @@ const envOf = (container) => Object.fromEntries((container.env || []).map((e) =>
 
 // Chart and app versions appear in labels and image tags; the golden files hold placeholders so a
 // release bump never fails this test. Everything else is compared verbatim.
+// Helm 4 also puts a blank line before each document separator and one more at the very end where
+// Helm 3 did not: whitespace only, folded away so one golden serves both.
 const normalise = (s) => s
   .replaceAll(chart.appVersion, '__APP_VERSION__')
-  .replaceAll(`${chart.name}-${chart.version}`, `${chart.name}-__CHART_VERSION__`);
+  .replaceAll(`${chart.name}-${chart.version}`, `${chart.name}-__CHART_VERSION__`)
+  .replace(/\n\n+---\n/g, '\n---\n')
+  .replace(/\n+$/, '\n');
 
 const compareGolden = (name, rendered) => {
   const file = join(FIXTURES, `${name}.golden.yaml`);
   const actual = normalise(rendered);
   if (process.env.UPDATE_GOLDEN === '1') { writeFileSync(file, actual); return; }
   assert.ok(existsSync(file), `${file} is missing: run UPDATE_GOLDEN=1 node --test test/helm-chart.test.mjs`);
-  assert.equal(actual, readFileSync(file, 'utf8'), `${name} rendering differs from ${file} (UPDATE_GOLDEN=1 rewrites it after an intended change)`);
+  const expected = readFileSync(file, 'utf8');
+  if (actual !== expected) {
+    // The first differing lines, so a CI log says what changed (a Helm version, a template edit).
+    const a = actual.split('\n'); const e = expected.split('\n');
+    const diff = [];
+    for (let i = 0; i < Math.max(a.length, e.length) && diff.length < 24; i++) if (a[i] !== e[i]) diff.push(`@${i + 1}\n- ${e[i] ?? '<end>'}\n+ ${a[i] ?? '<end>'}`);
+    assert.fail(`${name} rendering differs from ${file} (UPDATE_GOLDEN=1 rewrites it after an intended change; helm ${helmVersion()}):\n${diff.join('\n')}`);
+  }
 };
+const helmVersion = () => { try { return run('helm', ['version', '--short']).stdout.trim(); } catch { return '?'; } };
 
 const kubeconform = (rendered, what) => {
   const r = run('kubeconform', ['-strict', '-summary', '-ignore-missing-schemas', '-schema-location', 'default'], rendered);
