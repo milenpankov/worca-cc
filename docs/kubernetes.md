@@ -195,7 +195,22 @@ Agents need a model credential; GitHub tokens stay with the controller.
 name it in `worker.credentialsSecret`: every worker pod takes it as `envFrom`, and every agent
 can read it (the same trade-off as one token in a Compose `.env`). Keep `GH_TOKEN` and the
 GitHub App variables in the **controller's** Secret (`secrets.existingSecret`): the controller
-makes the pushes and pull requests, and agents never see a Git credential.
+makes the pushes and pull requests, and agents never see a Git credential. The controller
+needs the model credential too for its own small calls (run titles and the like), so the same
+Secret may serve both `secrets.existingSecret` and `worker.credentialsSecret`.
+
+A long-lived token comes from `claude setup-token`, which prints its whole dialog, not just the
+token: paste the `sk-ant-oat01-…` line, or filter it:
+
+```bash
+kubectl -n worca create secret generic worca-claude \
+  --from-literal=CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token | grep -o 'sk-ant-oat01-[A-Za-z0-9_-]*' | head -1)"
+```
+
+A Secret holding the dialog shows up as *Invalid Authorization header value from
+CLAUDE_CODE_OAUTH_TOKEN: it contains a line break* on the first agent. Pods read the Secret at
+start: after changing it, `kubectl -n worca rollout restart statefulset/worca` (worker pods are
+new per run and per chat anyway).
 
 **With the broker** (`broker.enabled=true`, [credential-broker.md](credential-broker.md)), no
 model key exists in the controller or in any worker. The chart adds a Deployment from the same
@@ -253,6 +268,7 @@ Egress allowlist](docker.md#egress-allowlist)), not a replacement for it.
 | Probes fail with **403**; the pod restarts | The `Host: localhost` header was removed from the probes, or `WORCA_ALLOWED_HOSTS` was set without an identity check (the server then exits) | Keep `httpHeaders` on every probe; set the Access variables |
 | Controller logs *removed N orphan worker(s) from a previous controller* at boot | Normal after an upgrade or a crash: the old controller's workers cannot be reused (their tokens died with it) | Nothing; the drained runs auto-resume |
 | Controller logs *WORCA_ALLOWED_HOSTS is set but no identity check is configured* and exits | The Ingress is on, `controller.env` has neither `WORCA_CF_ACCESS_*` nor `WORCA_IDENTITY_ISSUER` | Set them ([Ingress](#ingress-allowed-hosts-and-cloudflare-access)) |
+| `helm upgrade --wait` times out and `worca-0` keeps its **old** spec (`Init:ErrImageNeverPull`, `ImagePullBackOff`, …) | A StatefulSet does not replace a pod that never became ready, so a fix to the image values does not reach it | `kubectl -n worca delete pod worca-0`; the StatefulSet recreates it from the new spec |
 | `helm upgrade` hangs on the StatefulSet | A PodDisruptionBudget with `minAvailable: 1` (`pdb.enabled`) or a drain longer than the grace period | Turn the PDB off; raise `controller.drainTimeoutMs` (the grace period follows) |
 | `kubectl drain <node>` never finishes | `pdb.enabled=true` on a single replica | That is why it is off by default; delete the pod by hand |
 | Agents cannot reach GitHub | `networkPolicy.workerEgressExceptCidrs` covers your Git host, or a corporate proxy needs `HTTPS_PROXY` in `worker.env` and `controller.env` | Adjust the CIDRs; add the proxy and `controller.extraNoProxy` |
