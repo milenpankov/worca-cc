@@ -4,9 +4,7 @@
 // about where agents run, reap the previous controller's workers at boot, close them at shutdown.
 // Also re-exports what the server wires with, so the server imports one module.
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
-
-const packageVersion = () => { try { return String(createRequire(import.meta.url)('../../../package.json').version); } catch { return null; } };
+import { worcaVersion } from './shared.mjs';
 import { executorKind, executorConfigError, installExecutor, sweepWorkerHomes, sweepStaged } from './index.mjs';
 import { createWorkerRegistry } from './registry.mjs';
 import { createBackend } from './backends/index.mjs';
@@ -83,7 +81,7 @@ export async function installExecutorFromEnv({ log = (l) => console.log(l), port
   const bootId = `ctl-${randomUUID()}`;
   const backend = await createBackend(kind, { log: (l) => log(`[worca-ui] executor: ${l}`), homeRoot: worcaHome(), bootId });
   const registry = createWorkerRegistry({
-    backend, bootId, version: packageVersion(), log: (l) => log(`[worca-ui] workers: ${l}`), onRelay: (f) => relayAskLine(f.token, f.line),
+    backend, bootId, version: worcaVersion(), log: (l) => log(`[worca-ui] workers: ${l}`), onRelay: (f) => relayAskLine(f.token, f.line),
     ...(port != null ? { port } : {}), ...(host ? { host } : {}),
   });
   await registry.listen();

@@ -159,6 +159,15 @@ export function workerImageFor(engine, { pattern, controllerImage, fullEngines =
   return `${ref.slice(0, -tail.length)}-${engine}${fullEngines.includes(engine) ? '-full' : ''}`;
 }
 
+/**
+ * Whether a worker of `engine` gets the controller's Claude login (the read-only /seed/claude mount and the copy
+ * into its HOME): only one that can run Claude Code — the claude and all images, or one image serving every engine.
+ */
+export function seedsClaudeLogin(engine, pattern) {
+  const perEngine = !pattern || (pattern !== 'self' && pattern.includes('{engine}'));
+  return !perEngine || engine === 'claude' || engine === 'all';
+}
+
 /** The worker container's env: its assignment, plus what every backend lets a worker inherit (shared.mjs
  *  passThroughEnv: connectivity and identity, never a credential). The controller's own home and projects paths
  *  are the worker's too, since its mounts are replicated at the same destinations. */
@@ -228,7 +237,7 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   const fullEngines = fullVariantEngines(env);
   const mem = parseBytes(env.WORCA_WORKER_MEM || '4g');
   const cpus = Number(env.WORCA_WORKER_CPUS || 2);
-  const pidsLimit = Number(env.WORCA_WORKER_PIDS || 1024);
+  const pidsLimit = envInt(env, 'WORCA_WORKER_PIDS', 2048);   // the one-container box's limit (compose.yml pids_limit)
   const live = new Map();   // workerId -> handle
   log(`docker ${version?.Version || '?'} via ${describeEndpoint(env)}; controller ${self.Name || selfId} on network ${template.network}, ${template.mounts.length} mount(s) replicated, user ${template.user || '(image default)'}`);
 
@@ -243,14 +252,15 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
       const engine = asked || await engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
       const image = workerImageFor(engine, { pattern, controllerImage: template.image, fullEngines });
       if (!image) throw new Error(`no worker image can be derived from the controller's image (${template.image || 'unknown'}): set WORCA_WORKER_IMAGE, e.g. registry/worca-worker:<tag>-{engine}`);
+      const seed = seedsClaudeLogin(engine, pattern);
       const name = `worca-worker-${scope.kind}-${String(scope.id).replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40)}-${workerId.slice(-8)}`;
       const spec = {
         Image: image, Cmd: ['worca', 'worker'], Hostname: name.slice(0, 63),
         ...(template.user ? { User: template.user } : {}),
-        Env: Object.entries(workerEnvFor({ scopeKey, workerId, token, controllerUrl, idleMs, engine, env })).map(([k, v]) => `${k}=${v}`),
+        Env: Object.entries(workerEnvFor({ scopeKey, workerId, token, controllerUrl, idleMs, engine, env, seedClaude: seed })).map(([k, v]) => `${k}=${v}`),
         Labels: { [CONTROLLER_LABEL]: bootId, [INSTANCE_LABEL]: instance, [SCOPE_LABEL]: scopeKey, [WORKER_LABEL]: workerId, 'worca.engine': engine },
         HostConfig: {
-          Mounts: template.mounts, NetworkMode: template.network,
+          Mounts: seed ? template.mounts : template.mounts.filter((m) => m.Target !== SEED_CLAUDE_DIR), NetworkMode: template.network,
           Tmpfs: { '/tmp': 'rw,size=2g' }, SecurityOpt: ['no-new-privileges:true'], CapDrop: ['ALL'],
           PidsLimit: pidsLimit, ...(mem ? { Memory: mem } : {}), ...(Number.isFinite(cpus) && cpus > 0 ? { NanoCpus: Math.round(cpus * 1e9) } : {}),
           RestartPolicy: { Name: 'no' }, Init: true,

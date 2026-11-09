@@ -45,6 +45,7 @@ export function createWorkerRegistry({
   maxWorkers = envInt('WORCA_WORKER_MAX', 20),
   startTimeoutMs = envInt('WORCA_WORKER_START_TIMEOUT_MS', 120_000),
   chatIdleMs = envInt('WORCA_WORKER_CHAT_IDLE_MS', 15 * 60_000),
+  helperIdleMs = envInt('WORCA_WORKER_HELPER_IDLE_MS', 2 * 60_000),   // a run's worker for another engine than the run's own
   tokenTtlMs = null,        // how long a worker has to present its token once its container exists; default: startTimeoutMs
   capWaitMs = envInt('WORCA_WORKER_CAP_WAIT_MS', CAP_WAIT_MS),
   capPollMs = WAIT_POLL_MS,
@@ -168,7 +169,10 @@ export function createWorkerRegistry({
   function begin(scope, key, ek, engine) {
     const workerId = `w-${scope.kind}-${randomBytes(4).toString('hex')}`;
     const entry = { scope, key, ek, engine, state: 'starting', workerId, token: null, handle: null, session: null, waiters: [], startedAt: Date.now(),
-      idleMs: scope.kind === 'chat' ? chatIdleMs : null, timer: null, probeTimer: null, ctl: new AbortController(), abandoned: false };
+      // A chat's worker leaves when the thread goes quiet. A run's own worker stays for the run; one it started for
+      // another engine (a title on Claude in a Codex run, one step on a second engine) leaves when idle and comes back
+      // on demand: it would otherwise hold a container's memory and CPU reservation until the run ends.
+      idleMs: scope.kind === 'chat' ? chatIdleMs : (engine && scope.engine && engine !== scope.engine ? helperIdleMs : null), timer: null, probeTimer: null, ctl: new AbortController(), abandoned: false };
     entries.set(ek, entry);
     entry.token = mintToken(key, ek, workerId);
     Promise.resolve()

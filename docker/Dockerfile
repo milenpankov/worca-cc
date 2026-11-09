@@ -77,7 +77,9 @@ RUN echo "apt refresh: ${APT_REFRESH:-none}" \
 # the container is the isolation boundary, as Playwright's own Docker image assumes.
 # hadolint ignore=DL3008,DL3013,SC2016
 RUN if [ "${VARIANT}" = "full" ]; then \
-      apt-get update \
+      { test -n "${UV_VERSION}" || { echo "UV_VERSION build arg is required for VARIANT=full (docker/engines.env)" >&2; exit 1; }; } \
+   && { test -n "${RAILWAY_CLI_VERSION}" || { echo "RAILWAY_CLI_VERSION build arg is required for VARIANT=full (docker/engines.env)" >&2; exit 1; }; } \
+   && apt-get update \
    && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv pipx build-essential pkg-config \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
@@ -87,9 +89,7 @@ RUN if [ "${VARIANT}" = "full" ]; then \
    && printf '%s\n' 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --disable-dev-shm-usage"' \
         > /etc/chromium.d/worca-container \
    && rm -rf /var/lib/apt/lists/* \
-   && test -n "${UV_VERSION}" || { echo "UV_VERSION build arg is required for VARIANT=full (docker/engines.env)" >&2; exit 1; } \
    && pip3 install --no-cache-dir --break-system-packages "uv==${UV_VERSION}" \
-   && test -n "${RAILWAY_CLI_VERSION}" || { echo "RAILWAY_CLI_VERSION build arg is required for VARIANT=full (docker/engines.env)" >&2; exit 1; } \
    && npm install -g "@railway/cli@${RAILWAY_CLI_VERSION}" \
    && npm cache clean --force; \
     fi

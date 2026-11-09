@@ -8,7 +8,7 @@ import http from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createDockerBackend, createDockerApi, dockerEndpoint, parseBytes, workerMountsFrom, workerImageFor, workerEnvFor, demuxLogs, CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, pickWorkerNetwork, containerIdFrom, selfContainerId } from '../src/core/executor/backends/docker.mjs';
+import { createDockerBackend, createDockerApi, dockerEndpoint, parseBytes, workerMountsFrom, workerImageFor, workerEnvFor, demuxLogs, CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, pickWorkerNetwork, containerIdFrom, selfContainerId, seedsClaudeLogin } from '../src/core/executor/backends/docker.mjs';
 import { seedClaudeLogin } from '../src/worker/main.mjs';
 
 const SELF = 'abc123';
@@ -150,6 +150,19 @@ test('the backend replicates the controller container and runs a worker on the s
     assert.equal(c.spec.Labels[WORKER_LABEL], 'w-run-abcd1234');
     assert.ok(c.spec.Labels[CONTROLLER_LABEL]);
     assert.ok(c.spec.Env.includes('WORCA_WORKER_TOKEN=tok'));
+    assert.ok(c.spec.Env.includes('WORCA_WORKER_SEED_CLAUDE=/seed/claude'), 'a Claude worker copies the login');
+    assert.equal(c.spec.HostConfig.PidsLimit, 2048, "the one-container box's process limit");
+    // A worker for an engine that never runs Claude Code gets neither the login volume nor the order to copy it.
+    assert.deepEqual([seedsClaudeLogin('claude', null), seedsClaudeLogin('all', null), seedsClaudeLogin('codex', null)], [true, true, false]);
+    assert.equal(seedsClaudeLogin('codex', 'reg/w:1-{engine}'), false);
+    assert.equal(seedsClaudeLogin('codex', 'reg/one-image:1'), true, 'one image for every engine: Claude Code may run there too');
+    assert.equal(seedsClaudeLogin('codex', 'self'), true);
+    const hc = await b.start({ scope: { kind: 'run', id: 'r-cx' }, scopeKey: 'run:r-cx', workerId: 'w-run-cdef5678', token: 'tok2', controllerUrl: 'ws://worca:4319', idleMs: null, engine: 'codex' });
+    const cx = [...d.containers.values()].find((x) => x.spec.Labels[WORKER_LABEL] === 'w-run-cdef5678');
+    assert.equal(hc.image, 'ghcr.io/sinishadjukic/worca-worker:1.20.0-codex');
+    assert.deepEqual(cx.spec.HostConfig.Mounts.map((m) => m.Target), ['/worca', '/Users/me/dev', '/etc/worca/ca.pem']);
+    assert.ok(!cx.spec.Env.some((e) => e.startsWith('WORCA_WORKER_SEED_CLAUDE=')));
+    await b.remove(hc, { reason: 'test' });
     assert.ok(c.spec.Env.includes('WORCA_CONTROLLER_URL=ws://worca:4319'));
     assert.ok(!c.spec.Env.some((e) => e.startsWith('GH_TOKEN=')));
     const listed = await b.listWorkers();

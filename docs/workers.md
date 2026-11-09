@@ -76,6 +76,8 @@ gets one worker per image, and they end together.
 | `WORCA_WORKER_PASS_ENV` | worker | more of the worker's own variable names to hand to its children ([Credentials on workers](#credentials-on-workers)) |
 | `WORCA_WORKER_CONNECT_RETRY_MS` | worker | how long a worker keeps trying to make its first connection (default 30 s); once connected there is no reconnect |
 | `WORCA_WORKER_CHAT_IDLE_MS` | controller | a chat worker leaves after this long with nothing to run (default 15 min) |
+| `WORCA_WORKER_HELPER_IDLE_MS` | controller | a run's worker for another engine than the run's own (its title on Claude, one step on a second engine) leaves after this long with nothing to run (default 2 min) and is started again on demand; the run's own worker stays for the run |
+| `WORCA_WORKER_MEM`, `WORCA_WORKER_CPUS`, `WORCA_WORKER_PIDS` | controller (Docker) | each worker container's memory, CPU and process limits (defaults `4g`, `2`, `2048`); on Kubernetes the chart's `worker.resources` |
 | `WORCA_WORKER_START_TIMEOUT_MS` | controller | how long a worker may take to connect (default 2 min). A worker whose container or pod ends before it connects fails the start at once, with what it printed |
 | `WORCA_DOCKER_TIMEOUT_MS` | controller | how long one Docker Engine request may take (default 30 s) before it fails |
 | `WORCA_WORKER_USER` | controller (Docker) | the `uid:gid` worker containers run as; default: the user the controller process runs as |
@@ -130,7 +132,9 @@ What that means per engine:
 | Goose | the provider's key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, …) with the provider and model named as [models.md](models.md#goose) describes | `goose configure` |
 | OpenCode | the provider's key in the environment | `opencode auth login` |
 
-The copied Claude login is a copy: each worker HOME holds its own, and the seed is read-only. If
+The copied Claude login is a copy: each worker HOME holds its own, and the seed is read-only. Only a
+worker that can run Claude Code gets it (the `claude` and `all` images, or one image serving every
+engine): a Codex or Gemini worker has neither the seed volume nor the copy. If
 the sign-in's tokens rotate when one copy refreshes them, the other copies stop working until the
 next seed (a worker's next start copies a newer login again). For anything long-lived prefer a
 token (`claude setup-token`, as `CLAUDE_CODE_OAUTH_TOKEN`) or the broker, which have no copies to

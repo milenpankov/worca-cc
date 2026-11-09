@@ -64,7 +64,9 @@ export function childEnv(env, { home, workerPid = process.pid, user = null, work
   }
   if (home) out.HOME = home;
   if (user) { out.USER = user; out.LOGNAME = user; }
-  out.WORCA_HOST_PID = String(workerPid);
+  // The host-guard pid names the process an agent must not kill: here, this worker. Only where the controller sent
+  // one (the guard is on, and the child is an engine): a script node's env has none on purpose.
+  if (out.WORCA_HOST_PID !== undefined) out.WORCA_HOST_PID = String(workerPid);
   return out;
 }
 
@@ -151,13 +153,11 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
   };
   const flush = (e, id) => {
     clearTimeout(e.flushTimer); e.flushTimer = null;
-    for (const stream of ['out', 'err']) {
-      const lines = e.pending[stream];
-      if (!lines.length) continue;
-      e.pending[stream] = [];
-      sendOut({ type: 'out', id, seq: e.seq++, stream, lines });
-    }
-    e.pendingChars = 0;
+    // One frame per run of lines from the same stream, in the order they arrived: an error line stays next to the
+    // output it belongs to (a frame per stream would put all of stdout before all of stderr).
+    const runs = e.pending;
+    e.pending = []; e.pendingChars = 0; e.pendingLines = 0;
+    for (const run of runs) sendOut({ type: 'out', id, seq: e.seq++, stream: run.stream, lines: run.lines });
     pauseIfBehind(e);
   };
   /** `more`: this is not the end of the line (the splitter cut a newline-free stream); the rest follows. */
@@ -170,9 +170,11 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
       return;
     }
     if (e.pendingChars + line.length > BATCH_CHARS) flush(e, id);
-    e.pending[stream].push(line);
+    const last = e.pending[e.pending.length - 1];
+    if (last && last.stream === stream) last.lines.push(line); else e.pending.push({ stream, lines: [line] });
     e.pendingChars += line.length;
-    if (e.pending[stream].length >= OUT_BATCH_LINES) { flush(e, id); return; }
+    e.pendingLines += 1;
+    if (e.pendingLines >= OUT_BATCH_LINES) { flush(e, id); return; }
     if (!e.flushTimer) e.flushTimer = setTimeout(() => flush(e, id), OUT_FLUSH_MS);
   };
 
@@ -195,7 +197,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         report({ type: 'spawn-error', id, code: err.code ?? null, message: String(err.message || err).slice(0, 4000) });
         return;
       }
-      const e = { child, pending: { out: [], err: [] }, pendingChars: 0, seq: 0, lastAck: -1, paused: false, flushTimer: null, grace: null, started: false, reported: false };
+      const e = { child, pending: [], pendingLines: 0, pendingChars: 0, seq: 0, lastAck: -1, paused: false, flushTimer: null, grace: null, started: false, reported: false };
       live.set(id, e);
       child.on('spawn', () => { e.started = true; report({ type: 'started', id, pid: child.pid }); });
       child.on('error', (err) => {

@@ -339,7 +339,7 @@ URL from `docker compose logs teams-tunnel`.
 | `WORCA_TAG` | `latest` | image tag |
 | `WORCA_IMAGE` | `ghcr.io/sinishadjukic/worca` | image name without the tag (a mirror, or `worca` for a local build); the default worker image is `<WORCA_IMAGE>-worker` |
 | `WORCA_WORKER_IMAGE` | derived: `<WORCA_IMAGE>-worker:<tag>-<engine>` | with the `workers` overlay: the worker image per engine (`{engine}` is the engine of the run or chat, and of each helper job); `self` = the worca image ([Workers](#workers-agents-in-their-own-containers)) |
-| `WORCA_WORKER_MEM`, `WORCA_WORKER_CPUS` | `4g`, `2` | each worker container's memory and CPU limits |
+| `WORCA_WORKER_MEM`, `WORCA_WORKER_CPUS`, `WORCA_WORKER_PIDS` | `4g`, `2`, `2048` | each worker container's memory, CPU and process limits |
 | `WORCA_WORKER_MAX` | `20` | worker containers at once |
 | `WORCA_WORKER_PORT` | `4319` | the controller's worker listener on the compose network; never published |
 | `WORCA_UPLINK_NETWORK` | `default` | with the `workers` overlay: the network the controller shares with its workers; `internal` together with the egress overlay (`worca container up --with egress,workers` sets it) |
@@ -545,7 +545,8 @@ What the overlay does:
   mounts at the same paths (path parity — the run's checkout, the store and the staged files are
   where the controller wrote them), the same network (so `ws://worca:4319` and `http://broker:8080`
   resolve), the same user. The docker socket is never passed on; the Claude login volume rides
-  read-only at `/seed/claude`, from which a fresh worker copies the login once.
+  read-only at `/seed/claude`, from which a fresh worker copies the login once (a worker that can
+  run Claude Code only: the `claude` and `all` images, or one image serving every engine).
 - Worker images are per engine: `WORCA_WORKER_IMAGE` (default
   `<WORCA_IMAGE>-worker:<tag>-{engine}`, i.e. `ghcr.io/sinishadjukic/worca-worker:<tag>-{engine}`);
   `WORCA_WORKER_IMAGE=self` runs workers from the worca image itself (Claude Code only). Pull the
@@ -553,7 +554,7 @@ What the overlay does:
   the run's engine refuses the first spawn naming the image to fix. The controller's own engine
   checks (`GET /api/engines`, the setup wizard) report non-Claude engines as *runs on the worker
   image — not checked on the controller*: the controller image only ships Claude Code.
-- `WORCA_WORKER_MEM` (4g), `WORCA_WORKER_CPUS` (2) and `WORCA_WORKER_MAX` (20) bound each worker and
+- `WORCA_WORKER_MEM` (4g), `WORCA_WORKER_CPUS` (2), `WORCA_WORKER_PIDS` (2048) and `WORCA_WORKER_MAX` (20) bound each worker and
   how many run at once; `worca container down` removes any worker still around.
 - The broker overlay combines with it (`--with workers,egress` and `-f compose.broker.yml`): workers
   reach the broker by its service name, and the egress sidecar's proxy address rides through to

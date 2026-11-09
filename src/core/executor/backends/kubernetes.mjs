@@ -34,10 +34,9 @@
 // token through a mounted secret can hand one over this way). Everything else — the handle,
 // the rejection paths, the cleanup — is the same.
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { createK8sApi, K8sApiError } from './k8s-api.mjs';
-import { startFailure, passThroughEnv, defaultWorkerEngine, fullVariantEngines, envInt, abortError } from '../shared.mjs';
+import { startFailure, passThroughEnv, defaultWorkerEngine, fullVariantEngines, envInt, abortError, worcaVersion } from '../shared.mjs';
 import {
   renderPodSpec, resolveImage, normalizeVariant, podName, workerSelector, workerContainer, assertAllowedEnv,
   DEFAULT_IMAGE_PATTERN, ANNOTATION_SCOPE, LABEL_ENGINE, LABEL_BOOT, scopeLabel,
@@ -58,7 +57,6 @@ const FATAL_WAITING = new Set(FATAL_WAITING_REASONS);
 const PULL_RETRIED = new Set(['ErrImagePull', 'ImagePullBackOff']);
 export const DEFAULT_PULL_GRACE_MS = 90_000;
 
-const packageVersion = () => { try { return createRequire(import.meta.url)('../../../../package.json').version; } catch { return 'latest'; } };
 const envJson = (env, name) => {
   const raw = String(env[name] || '').trim();
   if (!raw) return null;
@@ -122,7 +120,7 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
   const templatePath = String(env.WORCA_K8S_POD_TEMPLATE || '').trim() || DEFAULT_POD_TEMPLATE;
   const instanceId = String(env.WORCA_INSTANCE_ID || '').trim() || 'worca';
   const imagePattern = String(env.WORCA_K8S_WORKER_IMAGE || '').trim() || DEFAULT_IMAGE_PATTERN;
-  const version = String(env.WORCA_K8S_WORKER_TAG || '').trim() || packageVersion();
+  const version = String(env.WORCA_K8S_WORKER_TAG || '').trim() || worcaVersion() || 'latest';
   const variant = normalizeVariant(env.WORCA_K8S_WORKER_VARIANT);
   const fullEngines = fullVariantEngines(env);
   const images = envJson(env, 'WORCA_K8S_WORKER_IMAGES');

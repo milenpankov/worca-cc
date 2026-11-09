@@ -73,7 +73,9 @@ test("a worker child's env is the controller's composed env with this container'
   assert.equal(e.WORCA_WORKER_TOKEN, undefined);
   assert.equal(e.WORCA_CONTROLLER_URL, undefined);
   assert.equal(e.ANTHROPIC_API_KEY, 'k', 'credentials the controller composed ride through');
-  assert.deepEqual([e.HOME, e.USER, e.WORCA_HOST_PID], ['/worca/.worca-cc/worker-homes/run/r1', 'worca', '4242']);
+  assert.deepEqual([e.HOME, e.USER, e.WORCA_HOST_PID], ['/worca/.worca-cc/worker-homes/run/r1', 'worca', undefined], 'no host-guard pid was sent (a script node, or the guard is off): none is added');
+  const guarded = childEnv({ ...sent, WORCA_HOST_PID: '77' }, { home: '/h', workerPid: 4242, workerEnv, exists });
+  assert.equal(guarded.WORCA_HOST_PID, '4242', "the controller's pid means nothing here: the process an agent must not kill is this worker");
   // A path the backend passed into this container that does not exist here either is no better: not used.
   assert.equal(childEnv({ SSL_CERT_FILE: '/tmp/x/bundle.pem' }, { workerEnv: { SSL_CERT_FILE: '/tmp/x/bundle.pem' }, exists: () => false }).SSL_CERT_FILE, undefined);
 });
@@ -302,4 +304,17 @@ test('a long line is never cut between the two halves of a surrogate pair', () =
   assert.equal(got.map(([t]) => t).join(''), line);
   for (const [t] of got) assert.equal(Buffer.from(t, 'utf8').toString('utf8'), t);
   assert.deepEqual(got.map(([, more]) => more).slice(-1), [false], 'the last piece ends the line');
+});
+
+test('output keeps the order it arrived in across stdout and stderr', { timeout: 30000 }, async () => {
+  const frames = [];
+  const runner = createExecRunner({ send: (f) => { encodeFrame(f); frames.push(f); }, home: tmpdir(), log: () => {} });
+  const done = new Promise((resolve) => runner.onIdle(resolve));
+  // Five lines, alternating streams, all inside one flush window or straddling two: either way the order must hold.
+  const program = "const w=(s,t)=>new Promise((r)=>s.write(t+'\\n',()=>setTimeout(r,6)));(async()=>{await w(process.stdout,'A');await w(process.stderr,'B');await w(process.stdout,'C');await w(process.stderr,'D');await w(process.stdout,'E');})()";
+  runner.start({ type: 'exec', id: 'x-order', file: process.execPath, args: ['-e', program], cwd: null, env: { PATH: process.env.PATH || '' }, stdin: null, detached: true });
+  await done;
+  const out = frames.filter((f) => f.type === 'out');
+  assert.deepEqual(out.flatMap((f) => f.lines.map((l) => `${f.stream}:${l}`)), ['out:A', 'err:B', 'out:C', 'err:D', 'out:E'], 'an error line stays next to the output it belongs to');
+  assert.deepEqual(out.map((f) => f.seq), out.map((_, i) => i), 'frames are numbered in the order they were sent');
 });

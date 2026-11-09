@@ -2,7 +2,13 @@
 // What the worker backends, the registry and the worker itself must agree on, in ONE place: the
 // labels a worker container carries, the "could not start a worker" error, what counts as a
 // loopback URL, the engine a worker gets when nothing names one, and which of the controller's
-// settings a worker container inherits. No static imports: the worker process loads this too.
+// settings a worker container inherits, and this package's version. No worca imports: the worker process loads this too.
+import { createRequire } from 'node:module';
+
+/** This package's version: the controller's, and in a worker image the worker's. null when it cannot be read. */
+export function worcaVersion() {
+  try { return String(createRequire(import.meta.url)('../../../package.json').version); } catch { return null; }
+}
 
 /** Docker labels on a worker container (the CLI removes leftovers by the first). */
 export const CONTROLLER_LABEL = 'worca.controller';

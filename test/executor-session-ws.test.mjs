@@ -60,11 +60,34 @@ test('acquire starts a worker that connects with its token; the same scope reuse
 
 test('a spawn inside the scope runs on the worker: lines, stdin, exit code, HOME and the host-guard pid are the worker\'s', POSIX, async () => {
   const seen = [];
-  const r = await inRun(() => superviseSpawn(base({ file: script('read x; echo "in:$x"; echo "home:$HOME"; echo "pid:$WORCA_HOST_PID"; echo "tok:${WORCA_WORKER_TOKEN:-none}"; echo e 1>&2; exit 0'), args: [], stdin: 'hi', env: { PATH: process.env.PATH, WORCA_WORKER_TOKEN: 'leak?' }, onStdoutLine: (l) => seen.push(l) })));
+  const r = await inRun(() => superviseSpawn(base({ file: script('read x; echo "in:$x"; echo "home:$HOME"; echo "pid:$WORCA_HOST_PID"; echo "tok:${WORCA_WORKER_TOKEN:-none}"; echo e 1>&2; exit 0'), args: [], stdin: 'hi', env: { PATH: process.env.PATH, WORCA_WORKER_TOKEN: 'leak?', WORCA_HOST_PID: '1' }, onStdoutLine: (l) => seen.push(l) })));
   assert.deepEqual(r, { code: 0 });
   const expectHome = join(worcaHome(), 'worker-homes', 'run', 'r-ws');
   assert.deepEqual(seen, ['in:hi', `home:${expectHome}`, `pid:${process.pid}`, 'tok:none']);
   assert.ok(seen[1].startsWith(`home:${home}`));
+  // A spawn the controller sent no host-guard pid with (a script node) gets none from the worker either.
+  const bare = [];
+  await inRun(() => superviseSpawn(base({ file: script('echo "pid:${WORCA_HOST_PID:-none}"'), args: [], env: { PATH: process.env.PATH }, onStdoutLine: (l) => bare.push(l) })));
+  assert.deepEqual(bare, ['pid:none']);
+});
+
+test("a run's worker for another engine than its own leaves when idle and comes back on demand; the run's own stays", async () => {
+  const b = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  const r = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, helperIdleMs: 150, log: () => {} });
+  await r.listen();
+  try {
+    const scope = { kind: 'run', id: 'mixed', engine: 'codex' };
+    const own = await r.acquire(scope, { engine: 'codex' });
+    const helper = await r.acquire(scope, { engine: 'claude' });   // the run's title, on Claude
+    assert.notEqual(helper, own);
+    assert.deepEqual(b.started.map((h) => h.engine), ['codex', 'claude']);
+    for (let i = 0; i < 200 && b.live.length > 1; i++) await new Promise((res) => setTimeout(res, 20));
+    assert.deepEqual(b.live.map((h) => h.engine), ['codex'], "the helper left; the run's own worker has no idle timeout");
+    assert.equal(await r.acquire(scope, { engine: 'codex' }), own);
+    const again = await r.acquire(scope, { engine: 'claude' });
+    assert.notEqual(again, helper, 'a fresh one when the run needs that engine again');
+    assert.equal(b.started.length, 3);
+  } finally { await r.closeAll(); }
 });
 
 test('ten thousand lines arrive complete and in order through the send window', POSIX, async () => {
