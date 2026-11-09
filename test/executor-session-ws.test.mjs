@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { useTempHome } from './helpers/temp-home.mjs';
 import { createWorkerRegistry } from '../src/core/executor/registry.mjs';
+import { createWorkerSession } from '../src/core/executor/session.mjs';
+import { EventEmitter } from 'node:events';
 import { createInProcessBackend } from '../src/core/executor/backends/in-process.mjs';
 import { installExecutor } from '../src/core/executor/index.mjs';
 import { withExecutorScope } from '../src/core/executor/scope.mjs';
@@ -371,10 +373,15 @@ test('at the worker cap: a scope\'s second worker never waits, an idle chat work
     assert.deepEqual([err.code, err.errorClass], ['EWORKERSTART', 'network'], 'the run pauses or retries; it does not hang');
     assert.ok(logs.some((l) => /run:b waits for a free worker/.test(l)), logs.join('\n'));
   } finally { await r.closeAll(); }
-  // A chat worker with nothing running gives way to a run.
-  const two = await mk({ logs });
+  // A chat worker with nothing running gives way to a run — unless it was handed out a moment ago (its exec follows
+  // a few ticks after acquire): then the run waits for it like for any busy worker.
+  const two = await mk({ logs, opts: { claimGraceMs: 400 } });   // longer than capWaitMs (150): the first ask fails, a later one evicts
   try {
     await two.r.acquire({ kind: 'chat', id: 'idle-thread' }, { engine: 'claude' });
+    const tooSoon = await two.r.acquire({ kind: 'run', id: 'c' }, { engine: 'claude' }).then(() => null, (e) => e);
+    assert.match(tooSoon.message, /no free worker for run:c/, 'a worker just handed to a chat turn is not evicted under it');
+    assert.deepEqual(two.r.snapshot().map((e) => e.scope.id), ['idle-thread']);
+    await new Promise((res) => setTimeout(res, 450));
     const run = await two.r.acquire({ kind: 'run', id: 'c' }, { engine: 'claude' });
     assert.equal(run.scope.id, 'c');
     assert.deepEqual(two.r.snapshot().map((e) => e.scope.id), ['c'], 'the idle chat worker was released for it');
@@ -675,4 +682,26 @@ test("an acquire parked on a leaving worker's close ends with the caller's abort
     assert.equal(err?.name, 'AbortError');
     assert.ok(Date.now() - t0 < 5000, 'the stop was not held until the ping timeout');
   } finally { await r.closeAll(); }
+});
+
+test("a close that cut a live step tells its listeners so: a bye then is a loss, not an idle leave", () => {
+  // The session's own contract (the registry logs and removes by it): the execs are gone by the time the close
+  // listeners run, so the fact that a step was live travels with the reason.
+  const sock = Object.assign(new EventEmitter(), { send() {}, terminate() {}, close() {}, ping() {}, readyState: 1 });
+  const s = createWorkerSession(sock, { workerId: 'w-unit', scope: { kind: 'run', id: 'u' }, capabilities: CAPS, pid: 1, pingMs: 60_000 });
+  const seen = [];
+  s.onClose((reason, info) => seen.push([reason, info]));
+  let lost = null;
+  s.exec({ file: 'sleep', args: ['30'], cwd: null, env: {}, stdin: null }, { onStarted() {}, onLines() {}, onSpawnError() {}, onExit() {}, onLost: (why) => { lost = why; } });
+  sock.emit('message', JSON.stringify({ type: 'bye' }));
+  sock.emit('close', 1000, Buffer.from('idle'));
+  assert.equal(lost, 'bye');
+  assert.deepEqual(seen, [['bye', { hadExecs: true }]]);
+  const quiet = Object.assign(new EventEmitter(), { send() {}, terminate() {}, close() {}, ping() {}, readyState: 1 });
+  const s2 = createWorkerSession(quiet, { workerId: 'w-unit2', scope: { kind: 'chat', id: 'u' }, capabilities: CAPS, pid: 1, pingMs: 60_000 });
+  const seen2 = [];
+  s2.onClose((reason, info) => seen2.push([reason, info]));
+  quiet.emit('message', JSON.stringify({ type: 'bye' }));
+  quiet.emit('close', 1000, Buffer.from('idle'));
+  assert.deepEqual(seen2, [['bye', { hadExecs: false }]], 'an idle leave');
 });

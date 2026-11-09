@@ -50,8 +50,9 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
     closed = true;
     closeReason = reason;
     clearInterval(pingTimer);
+    const hadExecs = execs.size > 0;   // the listeners learn whether a step was cut: the execs are gone by then
     for (const [id, h] of execs) { execs.delete(id); try { h.onLost(reason); } catch { /* listener */ } }
-    for (const fn of closeFns) { try { fn(reason); } catch { /* listener */ } }
+    for (const fn of closeFns) { try { fn(reason, { hadExecs }); } catch { /* listener */ } }
   };
 
   const onFrame = (frame) => {

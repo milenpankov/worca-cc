@@ -28,6 +28,7 @@ import { currentOwner } from '../billing.mjs';
 import { gitAvailable } from '../git-available.mjs';
 import { withNoGitPath } from '../nogit-stub.mjs';
 import { sessionFor, spawnsRemotely } from '../executor/index.mjs';
+import { abortError } from '../executor/shared.mjs';
 import { createRemoteChild } from '../executor/remote-child.mjs';
 
 const CHILD_PATH = fileURLToPath(new URL('./script-child.mjs', import.meta.url));
@@ -58,9 +59,6 @@ const TAIL_LINES = 20;
 /** Every error the runner throws: never classified recoverable (D9). */
 function scriptError(message, extra = {}) {
   return Object.assign(new Error(message), { errorClass: null, ...extra });
-}
-function abortError() {
-  return Object.assign(new Error('aborted'), { name: 'AbortError' });
 }
 /**
  * What a script's failed spawn is thrown as. Locally that is a script error, never recoverable (D9). Under a remote
@@ -353,7 +351,7 @@ function spawnScriptOn({ file, args, cwd, env, stdin = null, timeoutMs, signal, 
       catch (err) { reject(err); return; }
     }
     const child = session
-      ? createRemoteChild(session, { file: spawnFile, args: spawnArgs, cwd, env: spawnEnv ?? { ...process.env }, stdin, displayBin: file })
+      ? createRemoteChild(session, { file: spawnFile, args: spawnArgs, cwd, env: spawnEnv ?? scriptBaseEnv(null), stdin, displayBin: file })   // no env given: this process's, minus what no script may carry
       : spawn(spawnFile, spawnArgs, {
         cwd,
         env: spawnEnv,
@@ -622,7 +620,12 @@ export async function runScriptExecution(ctx) {
     const [exe, ...pre] = probe.command;
     run = await spawnOrThrow({ file: exe, args: [...pre, '-u', PY_HARNESS_PATH, file], cwd: envelope.ctx.cwd,
       env: { ...env, ...PY_ENV }, stdin: JSON.stringify(envelope), timeoutMs, signal: ctx.signal, onLine,
-      stdoutMode: 'frame', platform });
+      stdoutMode: 'frame', platform }).catch((err) => {
+      // The worker image has no python (the slim images ship none): the sentence a local preflight would have given,
+      // with the image that has one.
+      if (spawnsRemotely() && err?.code === 'ENOENT') throw scriptError(`${pythonMissingSentence(key).replace('on this machine', 'in the worker image')}; a slim worker image ships no python — use the -full image (WORCA_TAG=<version>-full, or worker.variant: full in the Helm chart)`);
+      throw err;
+    });
     afterRun(run);
     frame = readFrame(run, 'print() or api.log()');
   } else {

@@ -43,10 +43,14 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
   // `relay` frame and its answer comes back as `relay-result`.
   const relays = new Map();   // id -> { resolve }
   let relaySeq = 0;
-  const relay = (relayToken, line) => new Promise((resolve) => {
+  const relay = (relayToken, line, { timeoutMs = null } = {}) => new Promise((resolve) => {
     const id = `r${++relaySeq}`;
     if (ws.readyState !== WebSocket.OPEN) return resolve({ lines: null, error: 'worker is not connected' });
-    relays.set(id, { resolve });
+    let timer = null;
+    const entry = { resolve: (r) => { clearTimeout(timer); resolve(r); } };
+    relays.set(id, entry);
+    // A line nobody waits for any more (the shim's timeout) frees its slot and the request it held; a late answer is dropped.
+    if (timeoutMs > 0) { timer = setTimeout(() => { relays.delete(id); resolve({ lines: null, error: 'relay timed out' }); }, timeoutMs); timer.unref?.(); }
     send({ type: 'relay', id, token: relayToken, line });
   });
 

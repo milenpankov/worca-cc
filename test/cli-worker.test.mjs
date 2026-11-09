@@ -340,3 +340,24 @@ test('a spawn that fails at once leaves the worker as idle as before: the idle c
   assert.equal(idle, 1, 'a chat worker whose exec failed at once still idles out by itself');
   assert.equal(runner.liveCount, 0);
 });
+
+import { startRelayShim } from '../src/worker/relay-shim.mjs';
+
+test('a relayed line that times out frees its slot in the worker and answers 502; a late answer is dropped', async () => {
+  const pending = new Map(); let seq = 0;
+  // A relay with the worker client's contract: resolve on the controller's answer, or by its own timeout.
+  const relays = new Map();
+  const relay = (token, line, { timeoutMs = null } = {}) => new Promise((resolve) => {
+    const id = `r${++seq}`; let timer = null;
+    relays.set(id, { resolve: (r) => { clearTimeout(timer); resolve(r); } });
+    if (timeoutMs > 0) timer = setTimeout(() => { relays.delete(id); resolve({ lines: null, error: 'relay timed out' }); }, timeoutMs);
+    pending.set(id, line);
+  });
+  const shim = await startRelayShim({ relay, port: 0, timeoutMs: 80, log: () => {} });
+  try {
+    const res = await fetch(`http://127.0.0.1:${shim.port}/api/ask/relay`, { method: 'POST', headers: { 'x-worca-relay': 't', 'content-type': 'application/json' }, body: JSON.stringify({ line: '{"id":1}' }) });
+    assert.equal(res.status, 502);
+    assert.match((await res.json()).error, /relay timed out/);
+    assert.equal(relays.size, 0, 'the slot (and the line it held) is gone');
+  } finally { await shim.close(); }
+});

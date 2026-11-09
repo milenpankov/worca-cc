@@ -78,7 +78,9 @@ export function workerEnvFor({ controllerUrl, token, scopeKey, workerId, idleMs 
     WORCA_WORKER_ID: workerId,
     WORCA_HOME: WORKER_HOME,
     WORCA_PROJECTS_ROOT: WORKER_PROJECTS_ROOT,
-    ...passThroughEnv(controllerEnv, { controllerUrl }),   // the same inherited set as under Docker (shared.mjs)
+    // The same inherited set as under Docker (shared.mjs), including the controller's own paths: the shared volume is
+    // mounted at the same places in every pod, so a controller at WORCA_HOME=/data has its workers there too.
+    ...passThroughEnv(controllerEnv, { controllerUrl, also: ['WORCA_HOME', 'WORCA_PROJECTS_ROOT', 'WORCA_DATA_DIR'] }),
   };
   if (Number.isFinite(Number(idleMs)) && Number(idleMs) > 0) out.WORCA_WORKER_IDLE_MS = String(Math.floor(Number(idleMs)));
   for (const [k, v] of Object.entries(extra)) if (v !== undefined && v !== null) out[k] = String(v);

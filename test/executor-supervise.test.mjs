@@ -558,3 +558,45 @@ test('one predicate says which engines run on a worker image rather than here', 
     for (const [f, re] of [['engines/readiness.mjs', /engineOnWorker\(e\.name\)/], ['engines/chat-descriptor.mjs', /seams\.onWorker \?\? engineOnWorker\(d\.engine\)/], ['run-harness.mjs', /engineOnWorker\(name\)/]]) assert.match(src(f), re, f);
   } finally { installExecutor(null); }
 });
+
+test('an enforced in-process egress policy refuses to boot with workers unless their network is policed elsewhere', async () => {
+  const saved = Object.fromEntries(['WORCA_EXECUTOR', 'WORCA_EXECUTOR_BACKEND', 'WORCA_CONTROLLER_URL', 'WORCA_EGRESS_MODE', 'WORCA_EGRESS_WORKERS'].map((k) => [k, process.env[k]]));
+  process.env.WORCA_EXECUTOR = 'docker'; process.env.WORCA_CONTROLLER_URL = 'ws://worca:4319'; process.env.WORCA_EGRESS_MODE = 'allow'; delete process.env.WORCA_EXECUTOR_BACKEND; delete process.env.WORCA_EGRESS_WORKERS;
+  try {
+    await assert.rejects(() => installExecutorFromEnv({ log: () => {} }), /WORCA_EGRESS_MODE=allow is enforced by a proxy inside this process, which workers cannot reach: with WORCA_EXECUTOR=docker the agents would have open network access.*WORCA_EGRESS_WORKERS=external/);
+    assert.equal(isRemoteExecutor(), false);
+    // Said so: the boot goes on (into the docker backend, which has no Engine here — a different error).
+    process.env.WORCA_EGRESS_WORKERS = 'external'; process.env.WORCA_DOCKER_HOST = 'unix:///nonexistent/worca.sock';
+    await assert.rejects(() => installExecutorFromEnv({ log: () => {} }), (e) => !/WORCA_EGRESS_MODE/.test(e.message));
+  } finally {
+    delete process.env.WORCA_DOCKER_HOST;
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test("a spawn that names no env never ships this process's environment raw to a worker", POSIX, async () => {
+  const session = createLoopbackSession({ workerId: 'w-raw' });
+  const registry = createLoopbackRegistry({ session });
+  const saved = { GH_TOKEN: process.env.GH_TOKEN, WORCA_BROKER_SECRET: process.env.WORCA_BROKER_SECRET };
+  process.env.GH_TOKEN = 'ghp_controller'; process.env.WORCA_BROKER_SECRET = 'broker-secret';
+  try {
+    const sh = script('echo "gh:${GH_TOKEN:-none} broker:${WORCA_BROKER_SECRET:-none} path:${PATH:+set}"');
+    const lines = [];
+    await remote(registry, () => superviseSpawn(base({ file: sh, args: [], env: undefined, displayBin: 'sh', onStdoutLine: (l) => lines.push(l) })));
+    assert.deepEqual(lines, ['gh:none broker:none path:set']);
+    const sent = session.specs.at(-1).env;
+    assert.equal('GH_TOKEN' in sent, false); assert.equal('WORCA_BROKER_SECRET' in sent, false);
+    // A script node without an env either.
+    const lines2 = [];
+    await remote(registry, () => spawnScript({ file: sh, args: [], cwd: process.cwd(), env: undefined, onLine: (l) => lines2.push(l), stdoutMode: 'lines' }).catch(() => null));
+    const sentScript = session.specs.at(-1).env;
+    assert.equal('GH_TOKEN' in sentScript, false);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test('a python node on a worker without python fails with the python sentence and the image to use, not a bare ENOENT', () => {
+  const src = readFileSync(new URL('../src/core/graph/script-runner.mjs', import.meta.url), 'utf8');
+  assert.match(src, /spawnsRemotely\(\) && err\?\.code === 'ENOENT'\) throw scriptError\(`\$\{pythonMissingSentence\(key\)\.replace\('on this machine', 'in the worker image'\)\}; a slim worker image ships no python/);
+});

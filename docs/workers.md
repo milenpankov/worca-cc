@@ -77,6 +77,7 @@ gets one worker per image, and they end together.
 | `WORCA_WORKER_PASS_ENV` | worker | more of the worker's own variable names to hand to its children ([Credentials on workers](#credentials-on-workers)) |
 | `WORCA_WORKER_CONNECT_RETRY_MS` | worker | how long a worker keeps trying to make its first connection (default 30 s); once connected there is no reconnect |
 | `WORCA_WORKER_CHAT_IDLE_MS` | controller | a chat worker is released after this long with nothing to run (default 15 min); the worker's own timer, at twice that, is the backstop for a controller that never gets to it |
+| `WORCA_EGRESS_WORKERS` | controller | `external`: the workers' outbound network is policed by the egress sidecar or a cluster network policy, so an enforced `WORCA_EGRESS_MODE` (a proxy inside the controller) may stay on; without it such a controller refuses to boot with workers |
 | `WORCA_WORKER_RELAY_TIMEOUT_MS` | controller | how long one relayed chat tool call may take before the worker's relay gives up on it (default 15 min); a tool that runs a script or waits on a run needs the room |
 | `WORCA_WORKER_HELPER_IDLE_MS` | controller | a run's worker for another engine than the run's own (its title on Claude, one step on a second engine) leaves after this long with nothing to run (default 2 min) and is started again on demand; the run's own worker stays for the run |
 | `WORCA_WORKER_MEM`, `WORCA_WORKER_CPUS`, `WORCA_WORKER_PIDS` | controller (Docker) | each worker container's memory, CPU and process limits (defaults `4g`, `2`, `2048`); on Kubernetes the chart's `worker.resources` |
@@ -178,9 +179,11 @@ is not implemented.
   on Claude Code, whatever engine the run used: the controller image carries no other engine.
 - **Bridged models** (an entry with `upstream`, served by the controller's loopback bridge) are
   refused at run and turn start: the bridge is not reachable from another container yet.
-- **The in-process outbound policy proxy** (`WORCA_EGRESS_MODE`) does not reach workers; use the
-  egress sidecar (`docker/compose.egress.yml`) or a cluster network policy. A proxy URL that is
-  not loopback (`http://egress:3128`) rides through to workers unchanged.
+- **The in-process outbound policy proxy** (`WORCA_EGRESS_MODE`) does not reach workers, so with
+  it enforced the controller refuses to boot under a remote executor until the workers' network is
+  policed elsewhere — the egress sidecar (`docker/compose.egress.yml`) or a cluster network
+  policy — and `WORCA_EGRESS_WORKERS=external` says so. A proxy URL that is not loopback
+  (`http://egress:3128`) rides through to workers unchanged.
 - **The credential broker** must be reachable from the worker network (`WORCA_BROKER_URL` names
   a service, not loopback).
 - **Agent isolation** (`WORCA_AGENT_USER`, sudo) is not used on a worker: the container is the isolation.

@@ -29,17 +29,13 @@ export function startRelayShim({ relay, port = DEFAULT_RELAY_PORT, host = '127.0
       let line;
       try { ({ line } = JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { return reply(400, { error: 'bad json' }); }
       if (typeof line !== 'string') return reply(400, { error: 'line required' });
-      let timer = null;
       try {
-        const r = await Promise.race([
-          relay(token, line),
-          new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('relay timed out')), timeoutMs); }),
-        ]);
+        const r = await relay(token, line, { timeoutMs });   // the relay itself gives up after timeoutMs and frees its slot
         if (r?.error) return reply(502, { error: r.error });
         return reply(200, { out: r?.lines ?? [] });
       } catch (err) {
         return reply(502, { error: err?.message || 'relay failed' });
-      } finally { clearTimeout(timer); }
+      }
     });
   });
   server.on('clientError', (_err, socket) => socket.destroy());

@@ -32,6 +32,8 @@ const HELLO_TIMEOUT_MS = 10_000;
 const SWEEP_MS = 30_000;
 /** How long an acquire waits for a leaving worker's socket to close before it looks again (an abort ends it sooner). */
 const LEAVE_WAIT_MS = 10_000;
+/** An idle worker whose last touch is this recent was just handed out by acquire (its exec follows a few ticks later). */
+const CLAIM_GRACE_MS = 5_000;
 const WAIT_POLL_MS = 2_000;
 const CAP_WAIT_MS = 10 * 60_000;
 
@@ -51,6 +53,7 @@ export function createWorkerRegistry({
   tokenTtlMs = null,        // how long a worker has to present its token once its container exists; default: startTimeoutMs
   capWaitMs = envInt('WORCA_WORKER_CAP_WAIT_MS', CAP_WAIT_MS),
   capPollMs = WAIT_POLL_MS,
+  claimGraceMs = CLAIM_GRACE_MS,   // an idle worker touched this recently was just handed to a spawn: not evictable
   version = null,           // this controller's worca version: a worker that reports another one is named in the log
   probeMs = 3_000,          // while waiting for a worker's hello: how often the backend is asked whether it died
   pingMs = undefined,
@@ -132,13 +135,13 @@ export function createWorkerRegistry({
       entry.session = session;
       entry.state = 'ready';
       clearTimeout(entry.timer); clearInterval(entry.probeTimer);
-      session.onClose((reason) => {
+      session.onClose((reason, { hadExecs = false } = {}) => {
         if (entries.get(t.ek) !== entry) return;
         entries.delete(t.ek);
         if (entry.state !== 'closing') {
           // `bye` with nothing running: the worker idled out by itself (its own timer is the backstop of this
           // registry's sweep) — a leave, not a loss.
-          const left = reason === 'bye' && session.liveExecCount === 0;
+          const left = reason === 'bye' && !hadExecs;
           log(left ? `worker ${entry.workerId} for ${t.key} left: idle` : `worker ${entry.workerId} for ${t.key} is gone: ${reason}`);
           entry.abandoned = true;   // a handle the backend has not handed over yet is removed when it arrives (begin)
           if (entry.handle) backend.remove(entry.handle, { reason: left ? 'idle' : `lost: ${reason}` }).catch(() => {});
@@ -306,7 +309,7 @@ export function createWorkerRegistry({
         // (a helper job on another engine's image): every such wait holds a slot, and a few of them deadlock.
         if (entries.size < maxWorkers || scopeEntries(key).length) return waitFor(begin(s, key, ek, want, helper), signal);
         // Full. A chat worker with nothing running gives way (its thread gets a fresh one on its next turn)…
-        const idle = [...entries.values()].filter((e) => e.state === 'ready' && e.idleMs != null && e.session.liveExecCount === 0)
+        const idle = [...entries.values()].filter((e) => e.state === 'ready' && e.idleMs != null && e.session.liveExecCount === 0 && Date.now() - e.session.lastActiveAt > claimGraceMs)
           .sort((a, b) => a.session.lastActiveAt - b.session.lastActiveAt)[0];
         if (idle) { log(`worker cap (${maxWorkers}) reached: releasing idle ${idle.key} for ${key}`); await releaseEntry(idle, { reason: 'evicted: worker cap' }); continue; }
         // …else this waits, says so once, and gives up as a start failure (the run pauses or retries) rather than hang.

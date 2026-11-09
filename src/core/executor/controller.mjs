@@ -86,6 +86,14 @@ export async function installExecutorFromEnv({ log = (l) => console.log(l), port
   if (!inProcess && !String(process.env.WORCA_CONTROLLER_URL || '').trim()) {
     throw new Error(`WORCA_CONTROLLER_URL is not set: with WORCA_EXECUTOR=${kind} the workers run in other containers and cannot reach this process on loopback. Set it to the address they dial, e.g. ws://worca:4319 (the Compose service) or ws://<service>.<namespace>.svc:4319`);
   }
+  // The outbound network policy (WORCA_EGRESS_MODE) is a proxy in THIS process, which no other container can reach:
+  // agents on workers would have open network access while the operator believes a policy holds. Refuse, unless the
+  // operator says the workers' network is policed elsewhere (the egress sidecar, a cluster network policy).
+  const egress = readEgressPolicy(process.env);
+  const workersPoliced = String(process.env.WORCA_EGRESS_WORKERS || '').trim().toLowerCase() === 'external';
+  if (egress.enforced && !inProcess && !workersPoliced) {
+    throw new Error(`WORCA_EGRESS_MODE=${egress.mode} is enforced by a proxy inside this process, which workers cannot reach: with WORCA_EXECUTOR=${kind} the agents would have open network access. Put the workers behind the egress sidecar (docker/compose.egress.yml) or a cluster network policy and set WORCA_EGRESS_WORKERS=external to say so, or unset WORCA_EGRESS_MODE`);
+  }
   // One boot id for the registry and the backend: a worker container's label names this controller process.
   const bootId = `ctl-${randomUUID()}`;
   const backend = await createBackend(kind, { log: (l) => log(`[worca-ui] executor: ${l}`), homeRoot: worcaHome(), bootId });
@@ -98,7 +106,7 @@ export async function installExecutorFromEnv({ log = (l) => console.log(l), port
   WORKERS_ELSEWHERE = !inProcess;
   installExecutor({ kind, registry });
   log(`[worca-ui] executor: ${kind} (${backend.describe?.()?.kind || kind}); workers connect to ${registry.controllerUrl}, up to ${registry.describe().maxWorkers} at once`);
-  if (readEgressPolicy(process.env).enforced) log('[worca-ui] executor: the outbound network policy proxy runs in this process and does not reach workers; use the egress sidecar (docker/compose.egress.yml) or a cluster network policy');
+  if (egress.enforced) log('[worca-ui] executor: the outbound network policy proxy runs in this process and does not reach workers; WORCA_EGRESS_WORKERS=external says their network is policed by the egress sidecar or a cluster network policy');
   return { kind, registry };
 }
 

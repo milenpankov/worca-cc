@@ -21,6 +21,7 @@ import { withNoGitPath } from '../nogit-stub.mjs';
 import { withoutProxyLogin } from '../env-proxy.mjs';
 import { testWorkerCap } from '../settings.mjs';
 import { sessionFor, spawnsRemotely } from '../executor/index.mjs';
+import { abortError } from '../executor/shared.mjs';
 import { createRemoteChild } from '../executor/remote-child.mjs';
 import { DEFAULT_ENGINE_BINS, ENGINE_CLIS } from './cli-specs.mjs';
 
@@ -361,7 +362,7 @@ function superviseLocal(o, session = null) {
         if (old) throw Object.assign(new Error(old), { code: 'EWORKEROLDBIN', errorClass: 'auth' });
       }
       child = session
-        ? createRemoteChild(session, { file: exe, args: argv, cwd, env: childEnv ?? { ...process.env }, stdin, displayBin, reap: true })
+        ? createRemoteChild(session, { file: exe, args: argv, cwd, env: childEnv ?? composeSpawnEnv({}).env, stdin, displayBin, reap: true })   // no env given: this process's, minus what no spawn may carry (never raw across the boundary)
         : spawn(exe, argv, {
           cwd, stdio: [stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'], ...(childEnv ? { env: childEnv } : {}),
           ...(agentId || ownGroup ? { detached: true } : {}),
@@ -474,9 +475,7 @@ function superviseLocal(o, session = null) {
       rl.close();
       rlErr.close(); // readline already flushed its final unterminated line when the stream ended
       if (signal?.aborted) {
-        const err = new Error('aborted');
-        err.name = 'AbortError';
-        finish(rejectP, err);
+        finish(rejectP, abortError());
         return;
       }
       if (stdoutFatalError) {
