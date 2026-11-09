@@ -48,6 +48,7 @@ export function createWorkerRegistry({
   tokenTtlMs = null,        // how long a worker has to present its token once its container exists; default: startTimeoutMs
   capWaitMs = envInt('WORCA_WORKER_CAP_WAIT_MS', CAP_WAIT_MS),
   capPollMs = WAIT_POLL_MS,
+  probeMs = 3_000,          // while waiting for a worker's hello: how often the backend is asked whether it died
   pingMs = undefined,
   bootId = `ctl-${randomUUID()}`,
   log = (msg) => console.log(`[worca-workers] ${msg}`),
@@ -120,7 +121,7 @@ export function createWorkerRegistry({
       ws.send(encodeFrame({ type: 'welcome', controllerBootId: bootId, pingMs: pingMs ?? 30_000, idleMs: entry.idleMs ?? null }));
       entry.session = session;
       entry.state = 'ready';
-      clearTimeout(entry.timer);
+      clearTimeout(entry.timer); clearInterval(entry.probeTimer);
       session.onClose((reason) => {
         if (entries.get(t.ek) !== entry) return;
         entries.delete(t.ek);
@@ -139,7 +140,7 @@ export function createWorkerRegistry({
    *  and remove its container, now or when the backend hands it over. */
   function abandon(entry, reason) {
     entry.abandoned = true;
-    clearTimeout(entry.timer);
+    clearTimeout(entry.timer); clearInterval(entry.probeTimer);
     if (entries.get(entry.ek) === entry) entries.delete(entry.ek);
     if (entry.token) tokens.delete(entry.token);
     try { entry.ctl.abort(); } catch { /* nothing listening */ }
@@ -160,7 +161,7 @@ export function createWorkerRegistry({
   function begin(scope, key, ek, engine) {
     const workerId = `w-${scope.kind}-${randomBytes(4).toString('hex')}`;
     const entry = { scope, key, ek, engine, state: 'starting', workerId, token: null, handle: null, session: null, waiters: [], startedAt: Date.now(),
-      idleMs: scope.kind === 'chat' ? chatIdleMs : null, timer: null, ctl: new AbortController(), abandoned: false };
+      idleMs: scope.kind === 'chat' ? chatIdleMs : null, timer: null, probeTimer: null, ctl: new AbortController(), abandoned: false };
     entries.set(ek, entry);
     entry.token = mintToken(key, ek, workerId);
     Promise.resolve()
@@ -170,6 +171,16 @@ export function createWorkerRegistry({
         if (entry.abandoned || entry.state === 'closing') { backend.remove(handle, { reason: 'start abandoned' }).catch(() => {}); return; }
         const t = tokens.get(entry.token);
         if (t) t.armedAt = Date.now();   // the container exists: from now the token's time to live counts
+        // A worker that exits before it connects (a bad assignment: exit 78, an unwritable volume, a controller URL
+        // it cannot reach) would otherwise cost the whole start timeout and leave no reason behind.
+        if (typeof backend.probe === 'function' && entry.state === 'starting') {
+          entry.probeTimer = setInterval(() => {
+            Promise.resolve().then(() => backend.probe(handle)).then((why) => {
+              if (why && entry.state === 'starting' && !entry.abandoned) fail(entry, startFailure(`worker ${workerId} for ${key} will not connect: ${why}`));
+            }, () => { /* the backend could not say: the start timeout still stands */ });
+          }, probeMs);
+          entry.probeTimer.unref?.();
+        }
         if (entry.state === 'starting') entry.timer = setTimeout(() => fail(entry, startFailure(`worker ${workerId} for ${key} did not connect within ${Math.round(startTimeoutMs / 1000)} s`)), startTimeoutMs);
       }, (err) => {
         if (entry.abandoned) return;
@@ -199,7 +210,7 @@ export function createWorkerRegistry({
   /** End one worker: shutdown frame, then the backend removes it. */
   async function releaseEntry(entry, { reason = 'released', graceMs = 5000 } = {}) {
     entry.state = 'closing';
-    clearTimeout(entry.timer);
+    clearTimeout(entry.timer); clearInterval(entry.probeTimer);
     if (!entry.session) { try { entry.ctl.abort(); } catch { /* nothing listening */ } }   // still starting: stop the backend's wait
     if (entries.get(entry.ek) === entry) entries.delete(entry.ek);
     if (entry.token) tokens.delete(entry.token);

@@ -118,6 +118,9 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
   try { user = userInfo().username || null; } catch { user = null; }
   const idleFns = new Set();
 
+  /** Send a lifecycle frame (started, spawn-error, exit) from a child's event; never throw: an exception there is
+   *  uncaught, and takes the worker and every other process of the run with it. */
+  const report = (frame) => { try { send(frame); } catch (err) { log(`${frame.type} frame for ${frame.id} not sent (${err?.message || err})`); } };
   /** Send an output frame; never throw. What still cannot be sent is replaced by one line saying so. */
   const sendOut = (frame) => {
     try { send(frame); }
@@ -172,17 +175,17 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
           windowsHide: true,
         });
       } catch (err) {
-        send({ type: 'spawn-error', id, code: err.code ?? null, message: err.message });
+        report({ type: 'spawn-error', id, code: err.code ?? null, message: String(err.message || err).slice(0, 4000) });
         return;
       }
       const e = { child, pending: { out: [], err: [] }, pendingChars: 0, seq: 0, lastAck: -1, paused: false, flushTimer: null, grace: null, started: false, reported: false };
       live.set(id, e);
-      child.on('spawn', () => { e.started = true; send({ type: 'started', id, pid: child.pid }); });
+      child.on('spawn', () => { e.started = true; report({ type: 'started', id, pid: child.pid }); });
       child.on('error', (err) => {
         if (e.reported) return;
         e.reported = true;
         live.delete(id);
-        send({ type: 'spawn-error', id, code: err.code ?? null, message: err.message });
+        report({ type: 'spawn-error', id, code: err.code ?? null, message: String(err.message || err).slice(0, 4000) });
         if (!live.size) for (const fn of idleFns) fn();
       });
       for (const [stream, input] of [['out', child.stdout], ['err', child.stderr]]) {
@@ -199,7 +202,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         if (frame.reap === true && frame.detached !== false && platform !== 'win32' && typeof child.pid === 'number') { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* nothing left */ } }
         flush(e, id);
         live.delete(id);
-        send({ type: 'exit', id, code, signal });
+        report({ type: 'exit', id, code, signal });
         if (!live.size) for (const fn of idleFns) fn();
       });
       if (frame.stdin != null) { child.stdin.on('error', () => {}); child.stdin.end(frame.stdin, 'utf8'); }

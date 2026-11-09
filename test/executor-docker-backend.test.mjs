@@ -8,7 +8,7 @@ import http from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createDockerBackend, createDockerApi, dockerEndpoint, parseBytes, workerMountsFrom, workerImageFor, workerEnvFor, demuxLogs, CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, pickWorkerNetwork } from '../src/core/executor/backends/docker.mjs';
+import { createDockerBackend, createDockerApi, dockerEndpoint, parseBytes, workerMountsFrom, workerImageFor, workerEnvFor, demuxLogs, CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, pickWorkerNetwork, containerIdFrom, selfContainerId } from '../src/core/executor/backends/docker.mjs';
 import { seedClaudeLogin } from '../src/worker/main.mjs';
 
 const SELF = 'abc123';
@@ -145,17 +145,49 @@ test('the backend replicates the controller container and runs a worker on the s
     d.containers.set('foreign00000', { spec: { Image: 'x', Labels: { [CONTROLLER_LABEL]: 'ctl-other', 'worca.instance': 'other-stack', [WORKER_LABEL]: 'w-run-other', [SCOPE_LABEL]: 'run:o' } }, name: 'worca-worker-run-o', running: true, exited: false });
     assert.deepEqual((await b.listWorkers()).map((w) => w.workerId), ['w-run-abcd1234']);
     d.containers.delete('foreign00000');
+    assert.equal(await b.probe(h), null, 'a running container may still connect');
     await b.remove(h, { reason: 'done' });
     assert.equal(d.containers.size, 0);
     assert.deepEqual(await b.listWorkers(), []);
     assert.equal(b.describe().image, 'ghcr.io/sinishadjukic/worca-worker:1.20.0-<engine>');
     // The engine a start names (the run's, the chat's) picks the image; the install default only when none is named.
+    // While the registry waits for a worker's hello it asks whether the container is still there: this one was removed.
+    assert.equal(await b.probe(h), 'its container is gone');
     const h2 = await b.start({ scope: { kind: 'run', id: 'r-2' }, scopeKey: 'run:r-2', workerId: 'w-run-ffff0002', token: 'tok2', controllerUrl: 'ws://worca:4319', idleMs: null, engine: 'codex' });
     assert.equal(h2.image, 'ghcr.io/sinishadjukic/worca-worker:1.20.0-codex');
     assert.equal(await b.classFor('codex'), h2.image, 'the class the registry tells workers apart by is the image');
     assert.equal(await b.classFor(null), 'ghcr.io/sinishadjukic/worca-worker:1.20.0-claude');
     await b.remove(h2, { reason: 'done' });
   } finally { await d.close(); }
+});
+
+test("the controller finds its own container id in /proc, whatever the cgroup version, and falls back to the hostname", () => {
+  const id = 'a'.repeat(40) + '0123456789abcdef01234567';
+  assert.equal(id.length, 64);
+  assert.equal(containerIdFrom(`12:memory:/docker/${id}\n11:cpu:/docker/${id}\n`), id, 'cgroup v1');
+  assert.equal(containerIdFrom(`0::/system.slice/docker-${id}.scope\n`), id, 'the systemd cgroup driver');
+  assert.equal(containerIdFrom('0::/\n', `705 573 0:52 / / rw - overlay overlay rw\n710 705 8:1 /var/lib/docker/containers/${id}/hostname /etc/hostname rw - ext4 /dev/sda1 rw\n`), id, 'cgroup v2: the id is in the mounts Docker makes');
+  assert.equal(containerIdFrom('0::/\n', '705 573 0:52 / / rw - overlay overlay rw\n'), null);
+  assert.equal(containerIdFrom(`1:name=x:/docker/${id.slice(0, 63)}\n`), null, 'not 64 hex characters: not an id');
+  const read = (files) => (f) => { if (f in files) return files[f]; throw new Error('ENOENT'); };
+  assert.equal(selfContainerId({ HOSTNAME: 'my-host' }, { read: read({ '/proc/self/cgroup': `1:cpu:/docker/${id}\n` }) }), id, 'a controller with a hostname of its own is still found');
+  assert.equal(selfContainerId({ HOSTNAME: 'abc123def456' }, { read: read({}) }), 'abc123def456');
+  assert.equal(selfContainerId({ WORCA_CONTROLLER_CONTAINER: 'named', HOSTNAME: 'h' }, { read: read({ '/proc/self/cgroup': `1:cpu:/docker/${id}\n` }) }), 'named');
+});
+
+test('a Docker Engine that accepts a request and never answers fails it after the time limit', async () => {
+  const dir = mkdtempSync(join('/tmp', 'wd-hang-'));
+  const socketPath = join(dir, 's.sock');
+  const open = new Set();
+  const server = http.createServer(() => { /* never answers */ });
+  server.on('connection', (s) => { open.add(s); s.on('close', () => open.delete(s)); });
+  await new Promise((r) => server.listen(socketPath, r));
+  try {
+    const api = createDockerApi({ socketPath }, { timeoutMs: 80 });
+    const t0 = Date.now();
+    await assert.rejects(api.version(), /docker GET \/version: no answer within 0 s/);
+    assert.ok(Date.now() - t0 < 3000);
+  } finally { for (const s of open) s.destroy(); await new Promise((r) => server.close(r)); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('the worker network: never the Docker API one, an internal one before an open one, or the one named', async () => {

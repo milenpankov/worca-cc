@@ -144,6 +144,7 @@ import { passesFromWorker } from '../src/worker/exec.mjs';
 import { runWorkerCli, seedClaudeLogin } from '../src/worker/main.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
 
 test("the worker's own engine credentials reach its children when the controller sent none", () => {
   // Kubernetes: worker.credentialsSecret puts the model key in the WORKER pod; the controller may not have it at all.
@@ -229,4 +230,34 @@ test("an engine's step takes what it left running with it; a script's children s
   const kept = await runOnce(false);
   try { assert.equal(alive(kept), true, "a script node's background process is its own business, as locally"); }
   finally { try { process.kill(kept, 'SIGKILL'); } catch { /* gone */ } }
+});
+
+test('a signal while the worker waits to try its first connection again stops it: no new attempt', { timeout: 30000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'worca-sig-'));
+  const signals = new EventEmitter();   // the CLI's signal source: never the test process's own
+  try {
+    let n = 0;
+    const fake = () => { n += 1; return { done: Promise.resolve(1), connected: false, refusedStatus: null, endedWith: 'socket error: connect ECONNREFUSED', relay: async () => ({ lines: null, error: 'n/a' }), leave() {} }; };
+    const env = { PATH: '', WORCA_CONTROLLER_URL: 'ws://worca-workers:4319', WORCA_WORKER_SCOPE: 'run:r1', WORCA_WORKER_TOKEN: 't', WORCA_WORKER_ID: 'w-run-1',
+      WORCA_WORKER_HOME: join(root, 'home'), WORCA_WORKER_RELAY_PORT: String(40000 + Math.floor(Math.random() * 20000)), WORCA_WORKER_CONNECT_RETRY_MS: '20000' };
+    const running = runWorkerCli([], { env, out: () => {}, err: () => {}, start: fake, signals });
+    for (let i = 0; i < 300 && signals.listenerCount('SIGTERM') === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    for (let i = 0; i < 300 && n < 1; i++) await new Promise((r) => setTimeout(r, 10));
+    signals.emit('SIGTERM');   // `docker stop` between two attempts
+    assert.equal(await running, 1);
+    assert.equal(n, 1, 'it did not start another worker after being told to stop');
+    assert.equal(signals.listenerCount('SIGTERM'), 0, 'and left no signal handler behind');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a spawn error with a message longer than a frame allows is reported, not thrown', async () => {
+  const frames = [];
+  const runner = createExecRunner({ send: (f) => { encodeFrame(f); frames.push(f); }, home: tmpdir(), log: () => {} });
+  const done = new Promise((resolve) => runner.onIdle(resolve));
+  // A path this long cannot be spawned; the error's message embeds it and is longer than the 4096 a frame allows.
+  runner.start({ type: 'exec', id: 'x9', file: '/' + 'd'.repeat(5000), args: [], cwd: tmpdir(), env: { PATH: process.env.PATH }, stdin: null, detached: false });
+  await Promise.race([done, new Promise((r) => setTimeout(r, 3000))]);
+  const err = frames.find((f) => f.type === 'spawn-error');
+  assert.ok(err, JSON.stringify(frames.map((f) => f.type)));
+  assert.ok(err.message.length <= 4000);
 });

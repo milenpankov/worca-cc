@@ -114,7 +114,8 @@ export function removeWorkerHome(scope, home = worcaHome()) {
  * so the harness and the chat code call it unconditionally.
  */
 export async function releaseWorker(scope, { reason = 'released', keepHome = false, graceMs } = {}) {
-  if (!installed) return false;
+  // A HOME made while workers were on is removed even when they are off now (a thread deleted after a config change).
+  if (!installed) { if (!keepHome) removeWorkerHome(scope); return false; }
   const released = await installed.registry.release(scope, { reason, ...(graceMs != null ? { graceMs } : {}) });
   if (!keepHome) removeWorkerHome(scope);
   return released;

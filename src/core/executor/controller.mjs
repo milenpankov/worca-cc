@@ -106,13 +106,17 @@ export function keepsWorkerHome(row) {
  * `{ workers: <reap summary> }` to merge into the boot summary, or `{}` under the local executor.
  * @param {{ rowOf?: (id:string) => object|null, keepRun?: (id:string) => boolean, log?: Function, error?: Function }} o
  */
-export async function reapWorkersAtBoot({ rowOf = null, keepRun = (id) => keepsWorkerHome(rowOf?.(id)), log = (l) => console.log(l), error = (l) => console.error(l) }) {
+export async function reapWorkersAtBoot({ rowOf = null, threadOf = null, keepRun = (id) => keepsWorkerHome(rowOf?.(id)), log = (l) => console.log(l), error = (l) => console.error(l) }) {
   if (!WORKERS) return {};
+  // A chat thread's HOME (its engine sessions, a copied login) lives as long as the thread: one deleted by another
+  // path than the worker release (a chat channel, a server that ran without workers) is swept here. A lookup that
+  // fails keeps the HOME: never delete on doubt.
+  const keepChat = (id) => { if (!threadOf) return true; try { return !!threadOf(id); } catch { return true; } };
   const out = {};
   try { out.workers = await WORKERS.reapAtBoot(); } catch (err) { error(`[worca-ui] worker reap failed: ${err && err.message ? err.message : err}`); }
   try {
-    const removed = sweepWorkerHomes({ keep: ({ kind, id }) => kind === 'chat' || keepRun(id) });
-    if (removed.length) log(`[worca-ui] removed ${removed.length} worker home(s) of finished runs`);
+    const removed = sweepWorkerHomes({ keep: ({ kind, id }) => (kind === 'chat' ? keepChat(id) : keepRun(id)) });
+    if (removed.length) log(`[worca-ui] removed ${removed.length} worker home(s) of finished runs and deleted chats`);
   } catch (err) { error(`[worca-ui] worker-home sweep failed: ${err && err.message ? err.message : err}`); }
   try {
     const staged = sweepStaged();

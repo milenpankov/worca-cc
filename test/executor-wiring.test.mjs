@@ -58,11 +58,12 @@ test('the bridged-model gate is silent locally and names the model under a remot
   assert.equal(bridgedModelRefusal(['claude-sonnet-5']), null);
 });
 
-test('deploymentFacts names the executor, even on a native install', () => {
+test("deploymentFacts names the executor on a container; a local install's chat header stays as before", () => {
   assert.equal(deploymentFacts({}), null);
-  assert.deepEqual(deploymentFacts({ WORCA_EXECUTOR: 'docker' })?.executor, 'docker');
+  assert.equal(deploymentFacts({ WORCA_EXECUTOR: 'docker' }), null, 'a native install trying workers gets no deployment line');
   assert.equal(deploymentFacts({ WORCA_EXECUTOR: 'local' }), null);
   assert.equal(deploymentFacts({ WORCA_CONTAINER: '1', WORCA_EXECUTOR: 'kubernetes' })?.executor, 'kubernetes');
+  assert.equal(deploymentFacts({ WORCA_CONTAINER: '1' })?.executor, undefined);
 });
 
 test('createBackend: the in-process override, and a clear refusal for a backend that is not shipped', async () => {

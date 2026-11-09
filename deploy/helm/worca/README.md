@@ -68,7 +68,7 @@ dependencies and no CRDs.
 | `controller.podSecurityContext` | uid/gid/fsGroup 1000, `RuntimeDefault` | |
 | `controller.securityContext` | no escalation, drop all | |
 | `controller.podAnnotations`, `podLabels` | `{}` | |
-| `controller.probes.*` | startup 60×5 s, readiness 10 s, liveness 30 s delay, 6 failures | all `GET /api/health` with `Host: localhost` |
+| `controller.probes.*` | startup 60×5 s, readiness 10 s, liveness 30 s delay, 6 failures | all `curl` `/api/health` on loopback inside the pod (an `exec` probe: independent of the CNI) |
 
 Environment the chart always sets on the controller: `WORCA_EXECUTOR`, `WORCA_DB_DIR=/worca-db`,
 `WORCA_HOME=/worca`, `WORCA_PROJECTS_ROOT=/projects`, `WORCA_HOST`, `PORT`, `WORCA_INSTANCE_ID`,
@@ -116,7 +116,7 @@ Workers never get this Secret: see `worker.credentialsSecret`.
 | `worker.variant` | `""` = `image.variant` | `WORCA_K8S_WORKER_VARIANT` |
 | `worker.engines` | `{}` | per-engine `image`, `variant`, `resources` (`WORCA_K8S_ENGINES`, JSON) |
 | `worker.resources` | 500m / 1Gi requests, 4Gi limit | `WORCA_K8S_RESOURCES` and the template's container |
-| `worker.activeDeadlineSeconds` | `14400` | `WORCA_K8S_ACTIVE_DEADLINE_S` |
+| `worker.activeDeadlineSeconds` | `86400` | `WORCA_K8S_ACTIVE_DEADLINE_S`: a hard stop, not an idle timeout; a run holds its worker for its whole life |
 | `worker.pendingTimeoutSeconds` | `300` | `WORCA_K8S_PENDING_TIMEOUT_MS` |
 | `worker.idleTimeoutSeconds` | `900` | `WORCA_WORKER_CHAT_IDLE_MS` (chat workers) |
 | `worker.maxWorkers` | `20` | `WORCA_WORKER_MAX` |

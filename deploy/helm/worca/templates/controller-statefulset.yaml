@@ -124,29 +124,14 @@ spec:
           # The server's Host guard answers 403 to any Host it does not know; the kubelet sends
           # the pod IP as Host unless told otherwise. Keep the Host: localhost header.
           startupProbe:
-            httpGet:
-              path: /api/health
-              port: http
-              httpHeaders:
-                - name: Host
-                  value: localhost
+            {{- include "worca.healthProbe" . | nindent 12 }}
             periodSeconds: {{ .Values.controller.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.controller.probes.startup.failureThreshold }}
           readinessProbe:
-            httpGet:
-              path: /api/health
-              port: http
-              httpHeaders:
-                - name: Host
-                  value: localhost
+            {{- include "worca.healthProbe" . | nindent 12 }}
             periodSeconds: {{ .Values.controller.probes.readiness.periodSeconds }}
           livenessProbe:
-            httpGet:
-              path: /api/health
-              port: http
-              httpHeaders:
-                - name: Host
-                  value: localhost
+            {{- include "worca.healthProbe" . | nindent 12 }}
             initialDelaySeconds: {{ .Values.controller.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.controller.probes.liveness.periodSeconds }}
             failureThreshold: {{ .Values.controller.probes.liveness.failureThreshold }}

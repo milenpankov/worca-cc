@@ -181,8 +181,9 @@ worker:
 
 The chart passes them to the controller as `WORCA_K8S_ENGINES` (JSON).
 
-**Limits that end a worker.** `worker.activeDeadlineSeconds` (4 h) is Kubernetes' own hard
-stop on a worker pod; `worker.pendingTimeoutSeconds` (5 min) is how long the controller waits
+**Limits that end a worker.** `worker.activeDeadlineSeconds` (24 h) is Kubernetes' own hard
+stop on a worker pod — a stop, not an idle timeout: a run holds its worker for its whole life, and one
+that outlives the deadline loses its step in progress and repeats it on a new worker; `worker.pendingTimeoutSeconds` (5 min) is how long the controller waits
 for a pod to leave `Pending` before it fails the run with the reason (no node, no image);
 `worker.idleTimeoutSeconds` (15 min) releases a chat thread's worker with nothing to do;
 `worker.maxWorkers` (20) is the number of workers at once — a run past it waits for a slot.
@@ -253,9 +254,11 @@ side is in [remote-access.md](remote-access.md); the shape is the same as on Rai
 in the tunnel's place. `WORCA_IDENTITY_ISSUER` (an OIDC proxy) is the alternative;
 `WORCA_INSECURE_NO_IDENTITY_CHECK=1` says a proxy you trust is the only way in.
 
-Probes send `Host: localhost` from the kubelet, which the server sees as the pod network's gateway,
-so they pass without an allowed host. Any other pod is an unknown peer and gets 403: that is what
-`helm test` asserts (a 200 there would mean the guard is off).
+The probes run inside the controller pod (`exec`: `curl` on loopback with `Host: localhost`), so they
+pass on every network plugin: an `httpGet` probe comes from the kubelet, which the server would treat
+as an unknown peer wherever the kubelet does not arrive from the pod's own gateway (Calico, the AWS
+VPC CNI, Azure CNI). Any other pod is an unknown peer and gets 403: that is what `helm test` asserts
+(a 200 there would mean the guard is off).
 
 ## NetworkPolicy
 
@@ -280,7 +283,7 @@ Egress allowlist](docker.md#egress-allowlist)), not a replacement for it.
 | A run fails at once: *cannot start a worker … ImagePullBackOff* (or `ErrImagePull`) | The worker image for that engine does not exist for this tag, or needs a pull secret | Check the run's error for the exact image. Published tags are `<version>-<engine>[-full]`; `imagePullSecrets` applies to worker pods too |
 | A run fails after `worker.pendingTimeoutSeconds`: *did not connect within …* and the pod was `Pending` | No node fits the worker's requests, `nodeSelector` or `tolerations`; or the shared claim is unbound | `kubectl -n worca describe pod <worker>`; lower `worker.resources`, fix the selector, or check `kubectl get pvc` |
 | The controller exits **78**, `/worca is not writable` | The shared volume's `worca` directory is root-owned (NFS without fsGroup, hostPath) | Make the export writable by uid 1000 (see [Storage](#storage)) or set `storage.shared.prepare.enabled=true` |
-| Probes fail with **403**; the pod restarts | The `Host: localhost` header was removed from the probes, or `WORCA_ALLOWED_HOSTS` was set without an identity check (the server then exits) | Keep `httpHeaders` on every probe; set the Access variables |
+| Probes fail; the pod restarts | The probes were changed to `httpGet` (the kubelet is an unknown peer on most network plugins: 403), or `WORCA_ALLOWED_HOSTS` was set without an identity check (the server then exits) | Keep the chart's `exec` probes; set the Access variables |
 | Controller logs *removed N orphan worker(s) from a previous controller* at boot | Normal after an upgrade or a crash: the old controller's workers cannot be reused (their tokens died with it) | Nothing; the drained runs auto-resume |
 | Controller logs *WORCA_ALLOWED_HOSTS is set but no identity check is configured* and exits | The Ingress is on, `controller.env` has neither `WORCA_CF_ACCESS_*` nor `WORCA_IDENTITY_ISSUER` | Set them ([Ingress](#ingress-allowed-hosts-and-cloudflare-access)) |
 | `helm upgrade --wait` times out and `worca-0` keeps its **old** spec (`Init:ErrImageNeverPull`, `ImagePullBackOff`, …) | A StatefulSet does not replace a pod that never became ready, so a fix to the image values does not reach it | `kubectl -n worca delete pod worca-0`; the StatefulSet recreates it from the new spec |

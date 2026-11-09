@@ -30,11 +30,10 @@ export function githubMode(env = process.env) {
  *  local install (whose header stays exactly as before). */
 export function deploymentFacts(env = process.env, { remoteMode = false, projectsRoot = null } = {}) {
   const deployment = detectDeployment(env, { remoteMode });
-  // Where agents run (src/core/executor): named when they run in worker containers, which an
-  // operator may do from a native install too.
+  // Where agents run (src/core/executor): named on a container or hosted worca when they run in worker containers.
   const executor = String(env.WORCA_EXECUTOR || '').trim().toLowerCase();
   const remoteExecutor = executor && executor !== 'local' ? executor : null;
-  if (deployment === 'local' && !remoteExecutor) return null;
+  if (deployment === 'local') return null;
   // Actions and the terminal (docs/actions.md, docs/terminal.md "Security"): a hosted worca runs none
   // unless the operator set WORCA_ACTIONS_REMOTE / WORCA_TERMINAL_REMOTE.
   const hosted = deployment === 'hosted';

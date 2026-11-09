@@ -51,7 +51,8 @@ gets one worker per image, and they end together.
   There is no reconnect.
 - **Boot.** A controller removes every worker a previous controller of the same installation left
   (their tokens died with it; never one it started itself a moment ago), the worker homes of runs
-  nothing can continue — a paused run's and a crash-interrupted run's stay for their resume — and
+  nothing can continue and of chat threads that no longer exist — a paused run's and a
+  crash-interrupted run's stay for their resume — and
   staged spawn folders older than itself (each spawn removes its own; what a crashed controller
   left is nobody's).
 - **Tokens.** A worker's one-time token is good for as long as its container is still coming up
@@ -75,7 +76,8 @@ gets one worker per image, and they end together.
 | `WORCA_WORKER_PASS_ENV` | worker | more of the worker's own variable names to hand to its children ([Credentials on workers](#credentials-on-workers)) |
 | `WORCA_WORKER_CONNECT_RETRY_MS` | worker | how long a worker keeps trying to make its first connection (default 30 s); once connected there is no reconnect |
 | `WORCA_WORKER_CHAT_IDLE_MS` | controller | a chat worker leaves after this long with nothing to run (default 15 min) |
-| `WORCA_WORKER_START_TIMEOUT_MS` | controller | how long a worker may take to connect (default 2 min) |
+| `WORCA_WORKER_START_TIMEOUT_MS` | controller | how long a worker may take to connect (default 2 min). A worker whose container or pod ends before it connects fails the start at once, with what it printed |
+| `WORCA_DOCKER_TIMEOUT_MS` | controller | how long one Docker Engine request may take (default 30 s) before it fails |
 | `WORCA_DB_DIR` | controller | the database's own directory, off the shared volume (SQLite's WAL needs a local filesystem) |
 | `WORCA_CONTROLLER_URL`, `WORCA_WORKER_TOKEN`, `WORCA_WORKER_SCOPE`, `WORCA_WORKER_ID` | worker | the assignment, set by the controller's backend |
 | `WORCA_WORKER_HOME`, `WORCA_WORKER_IDLE_MS` | worker | optional |
@@ -127,6 +129,26 @@ Each engine's section in [models.md](models.md) has the exact variables and the 
 Seeding other engines' sign-ins the way Claude's is seeded is not implemented. The Compose option
 of a Claude key as a compose secret read through `apiKeyHelper` is for the one-container box; on
 workers use the token or the broker.
+
+## What a worker can reach
+
+A worker container separates an agent from the **controller's process and its secrets**: the
+GitHub credentials, the broker secret and, on Kubernetes, the database (it has its own volume
+there) are never in a worker. It does **not** separate one run from another, or from Worca's own
+files:
+
+- Every worker mounts the whole shared volume read-write and runs as the same user as the
+  controller. An agent can read what is on it: other runs' checkouts and outputs, other scopes'
+  worker homes (their engine sessions, a copied Claude login), files staged for a spawn.
+- It can also write there, including the folders the controller loads code from (plugins, agents,
+  workflows, scripts). Treat the agents of one installation as one trust domain, as you would
+  users of one shared machine.
+- On Compose the database file is on that same volume (`worca-home`); on Kubernetes it is not.
+
+What narrows this today: the [credential broker](credential-broker.md), so no model key sits in
+any environment or file an agent can read; a guardrail set that denies reads outside the project;
+and one installation per team or trust boundary. Mounting only what a scope needs into its worker
+is not implemented.
 
 ## What is different under a remote executor
 

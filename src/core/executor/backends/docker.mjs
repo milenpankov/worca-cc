@@ -9,7 +9,7 @@
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, INSTANCE_LABEL, NETWORK_ROLE_LABEL, FULL_VARIANT_ENGINES, fullVariantEngines, passThroughEnv, defaultWorkerEngine } from '../shared.mjs';
+import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, INSTANCE_LABEL, NETWORK_ROLE_LABEL, FULL_VARIANT_ENGINES, fullVariantEngines, passThroughEnv, defaultWorkerEngine, envInt } from '../shared.mjs';
 
 export const DOCKER_API = 'v1.43';
 export { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL };
@@ -35,18 +35,29 @@ export function dockerEndpoint(env = process.env) {
 }
 
 /** The controller's own container id: compose sets it as the hostname; an operator may name it. */
-export function selfContainerId(env = process.env) {
+export function selfContainerId(env = process.env, { read = (f) => readFileSync(f, 'utf8') } = {}) {
   const explicit = String(env.WORCA_CONTROLLER_CONTAINER || '').trim();
   if (explicit) return explicit;
-  try {
-    const m = /\/([0-9a-f]{64})(?:\.scope)?(?:\/|$)/.exec(readFileSync('/proc/self/cgroup', 'utf8'));
+  const text = (f) => { try { return read(f); } catch { return ''; } };
+  return containerIdFrom(text('/proc/self/cgroup'), text('/proc/self/mountinfo')) || String(env.HOSTNAME || hostname());
+}
+
+/**
+ * A container's own 64-hex id from what its /proc says. cgroup v1 names it in every line
+ * (`…:/docker/<id>`, `…/docker-<id>.scope`); under cgroup v2 that file is just `0::/`, and the id shows in the
+ * mounts Docker makes for the container (`/var/lib/docker/containers/<id>/hostname`). null when neither has one —
+ * the hostname is the fallback, which is the id's first 12 characters unless the operator set a hostname.
+ */
+export function containerIdFrom(cgroup = '', mountinfo = '') {
+  for (const text of [cgroup, mountinfo]) {
+    const m = /(?:^|[/-])([0-9a-f]{64})(?:\.scope)?(?=[/\s]|$)/m.exec(String(text));
     if (m) return m[1];
-  } catch { /* no cgroup file */ }
-  return String(env.HOSTNAME || hostname());
+  }
+  return null;
 }
 
 /** A tiny Docker Engine API client over node:http (no dependency). */
-export function createDockerApi(endpoint, { api = DOCKER_API } = {}) {
+export function createDockerApi(endpoint, { api = DOCKER_API, timeoutMs = 30_000 } = {}) {
   const request = (method, path, body, { raw = false } = {}) => new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request({
@@ -68,6 +79,9 @@ export function createDockerApi(endpoint, { api = DOCKER_API } = {}) {
       });
     });
     req.on('error', reject);
+    // An Engine (or socket proxy) that accepts the connection and never answers must not hold a run forever: the
+    // registry's own start timeout begins only once this backend has answered.
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`docker ${method} ${path}: no answer within ${Math.round(timeoutMs / 1000)} s`)));
     if (payload) req.write(payload);
     req.end();
   });
@@ -184,7 +198,7 @@ export async function pickWorkerNetwork({ attached = [], inspect = async () => n
 }
 
 export async function createDockerBackend({ env = process.env, log = () => {}, api = null, controllerId = null, bootId = `ctl-${process.pid}-${Date.now().toString(36)}` } = {}) {
-  const docker = api || createDockerApi(dockerEndpoint(env));
+  const docker = api || createDockerApi(dockerEndpoint(env), { timeoutMs: envInt(env, 'WORCA_DOCKER_TIMEOUT_MS', 30_000) });
   let version;
   try { version = await docker.version(); } catch (err) { throw new Error(`cannot reach the Docker Engine (${describeEndpoint(env)}): ${err.message}. Mount the socket or set WORCA_DOCKER_HOST to a socket proxy.`); }
   const selfId = controllerId || selfContainerId(env);
@@ -265,6 +279,15 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
       live.delete(handle.workerId);
       try { await docker.remove(handle.id); log(`removed ${handle.name || handle.id} (${reason || 'released'})`); }
       catch (err) { if (err.status !== 404) throw err; }
+    },
+    /** Why this worker will never connect, or null while it may: its container has exited (with what it printed). */
+    async probe(handle) {
+      if (!handle?.id) return null;
+      let info;
+      try { info = await docker.inspect(handle.id); } catch (err) { return err.status === 404 ? 'its container is gone' : null; }
+      if (info?.State?.Running || !(info?.State?.Status === 'exited' || info?.State?.Dead)) return null;
+      const tail = await docker.logsTail(handle.id, 50);
+      return `its container exited (code ${info.State.ExitCode})${tail ? `:\n${tail.trim()}` : ''}`;
     },
     async listWorkers() {
       const rows = await docker.list([`${INSTANCE_LABEL}=${instance}`]);   // this installation's only

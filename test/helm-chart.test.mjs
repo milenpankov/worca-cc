@@ -140,10 +140,13 @@ test('default render: the worker pod template, the controller StatefulSet and th
   assert.ok(ctl, 'container `controller`');
   assert.deepEqual(ctl.args, ['worca', 'ui']);
   for (const probe of ['startupProbe', 'readinessProbe', 'livenessProbe']) {
-    const get = ctl[probe]?.httpGet;
-    assert.equal(get?.path, '/api/health', `${probe} path`);
-    assert.deepEqual(get.httpHeaders, [{ name: 'Host', value: 'localhost' }], `${probe} carries Host: localhost (the Host guard answers 403 otherwise)`);
+    // Inside the pod, on loopback: an httpGet probe comes from the kubelet, which the server's peer guard answers 403
+    // on every network plugin where the kubelet does not arrive from the pod's own gateway (Calico, AWS VPC CNI, Azure CNI).
+    assert.equal(ctl[probe]?.httpGet, undefined, `${probe} is not an httpGet`);
+    assert.deepEqual(ctl[probe]?.exec?.command, ['curl', '-fsS', '--max-time', '4', '-H', 'Host: localhost', 'http://127.0.0.1:4317/api/health'], `${probe} asks the server from inside the pod`);
+    assert.equal(ctl[probe].timeoutSeconds, 5);
   }
+  assert.equal(envOf(ctl).WORCA_K8S_ACTIVE_DEADLINE_S, '86400', 'a worker pod lives as long as a long run: 24 h, the backend\'s own default');
   assert.equal(ctl.startupProbe.failureThreshold * ctl.startupProbe.periodSeconds, 300, 'startup: 60 x 5 s');
   assert.equal(ctl.livenessProbe.initialDelaySeconds, 30);
   assert.equal(ctl.livenessProbe.failureThreshold, 6);
@@ -160,7 +163,7 @@ test('default render: the worker pod template, the controller StatefulSet and th
   assert.equal(env.WORCA_K8S_WORKER_TAG, chart.appVersion);
   assert.equal(env.WORCA_K8S_WORKER_VARIANT, 'slim');
   assert.equal(env.WORCA_K8S_PENDING_TIMEOUT_MS, '300000');
-  assert.equal(env.WORCA_K8S_ACTIVE_DEADLINE_S, '14400');
+  assert.equal(env.WORCA_K8S_ACTIVE_DEADLINE_S, '86400');
   assert.deepEqual(JSON.parse(env.WORCA_K8S_RESOURCES), worker.resources, 'WORCA_K8S_RESOURCES equals the template\'s worker resources');
   assert.equal(env.WORCA_WORKER_MAX, '20');
   assert.equal(env.WORCA_WORKER_CHAT_IDLE_MS, '900000');

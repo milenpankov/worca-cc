@@ -297,9 +297,10 @@ test('a watch the server ends (its timeoutSeconds) reconnects from the last reso
   await fake.nextWatch();
   fake.update(pod.metadata.name, { phase: 'Pending', conditions: [{ type: 'PodScheduled', status: 'True' }] });
   const rv1 = fake.pods.get(pod.metadata.name).metadata.resourceVersion;
-  await new Promise((r) => setTimeout(r, 10));
+  await new Promise((r) => setTimeout(r, 60));   // the client reads the MODIFIED event: its resourceVersion is rv1 now
+  const again = fake.nextWatch();                // (not a fixed wait for the reconnect: a loaded machine makes that flaky)
   fake.endWatches(pod.metadata.name);
-  await new Promise((r) => setTimeout(r, 40));
+  await again;
   const watches = fake.calls.filter((c) => c.query.watch === '1');
   assert.equal(watches.length, 2, 'reconnected once');
   assert.deepEqual(watches.map((w) => w.query.resourceVersion), [rv0, rv1]);

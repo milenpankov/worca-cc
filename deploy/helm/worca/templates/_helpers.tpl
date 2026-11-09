@@ -322,3 +322,15 @@ spec:
         medium: Memory
         sizeLimit: {{ .Values.worker.shmSizeLimit }}
 {{- end -}}
+
+{{/*
+The controller's health probe, run INSIDE the pod against loopback. An httpGet probe comes from the kubelet,
+and in local mode the server answers only loopback and the pod's default gateway: on kind or flannel the kubelet
+happens to arrive from that gateway, on Calico, the AWS VPC CNI or Azure CNI it does not, and every probe would
+get 403 until the pod is restarted forever. From inside, the peer is loopback on every network.
+*/}}
+{{- define "worca.healthProbe" -}}
+exec:
+  command: ["curl", "-fsS", "--max-time", "4", "-H", "Host: localhost", "http://127.0.0.1:{{ .Values.controller.port }}/api/health"]
+timeoutSeconds: 5
+{{- end -}}

@@ -286,6 +286,18 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
       await client.deletePod(handle.namespace || namespace, handle.name, { gracePeriodSeconds: REMOVE_GRACE_S });
     },
 
+    /** Why this worker will never connect, or null while it may: its pod has ended (with its log tail), or is gone. */
+    async probe(handle) {
+      if (!handle?.name) return null;
+      let pod;
+      try { pod = await client.getPod(namespace, handle.name); } catch (err) { return err instanceof K8sApiError && err.status === 404 ? 'its pod is gone' : null; }
+      const c = classifyPod(pod);
+      if (c.kind !== 'exited') return null;
+      let tail = '';
+      try { tail = String(await client.podLog(namespace, handle.name, { tailLines: LOG_TAIL_LINES, container: 'worker' }) || '').trim(); } catch { /* no log access */ }
+      return `its pod ended: ${c.reason}${c.message ? ` (${c.message})` : ''}${tail ? `\n${tail}` : ''}`;
+    },
+
     async listWorkers() {
       const pods = await client.listPods(namespace, { labelSelector: workerSelector(instanceId) });
       return pods.map((p) => handleOf(p));

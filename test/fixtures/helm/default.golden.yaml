@@ -365,7 +365,7 @@ spec:
             - name: WORCA_INSTANCE_ID
               value: "worca"
             - name: WORCA_K8S_ACTIVE_DEADLINE_S
-              value: "14400"
+              value: "86400"
             - name: WORCA_K8S_PENDING_TIMEOUT_MS
               value: "300000"
             - name: WORCA_K8S_POD_TEMPLATE
@@ -393,29 +393,20 @@ spec:
           # The server's Host guard answers 403 to any Host it does not know; the kubelet sends
           # the pod IP as Host unless told otherwise. Keep the Host: localhost header.
           startupProbe:
-            httpGet:
-              path: /api/health
-              port: http
-              httpHeaders:
-                - name: Host
-                  value: localhost
+            exec:
+              command: ["curl", "-fsS", "--max-time", "4", "-H", "Host: localhost", "http://127.0.0.1:4317/api/health"]
+            timeoutSeconds: 5
             periodSeconds: 5
             failureThreshold: 60
           readinessProbe:
-            httpGet:
-              path: /api/health
-              port: http
-              httpHeaders:
-                - name: Host
-                  value: localhost
+            exec:
+              command: ["curl", "-fsS", "--max-time", "4", "-H", "Host: localhost", "http://127.0.0.1:4317/api/health"]
+            timeoutSeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet:
-              path: /api/health
-              port: http
-              httpHeaders:
-                - name: Host
-                  value: localhost
+            exec:
+              command: ["curl", "-fsS", "--max-time", "4", "-H", "Host: localhost", "http://127.0.0.1:4317/api/health"]
+            timeoutSeconds: 5
             initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 6

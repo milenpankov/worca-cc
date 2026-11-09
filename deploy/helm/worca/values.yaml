@@ -158,7 +158,7 @@ worker:
     limits:
       memory: 4Gi
   # WORCA_K8S_ACTIVE_DEADLINE_S: a worker pod older than this is killed by Kubernetes.
-  activeDeadlineSeconds: 14400
+  activeDeadlineSeconds: 86400
   # WORCA_K8S_PENDING_TIMEOUT_MS: give up on a worker that stays Pending (no node, no image).
   pendingTimeoutSeconds: 300
   # WORCA_WORKER_CHAT_IDLE_MS: a chat worker with nothing to do leaves after this long.

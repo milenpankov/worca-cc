@@ -16,6 +16,10 @@ const SHUTDOWN_SLACK_MS = 5_000;
  *   pingMs?: number, ackEvery?: number, log?: (msg:string) => void,
  *   onRelay?: (frame:object) => Promise<{lines?:string[]|null, error?:string|null}> }} o
  */
+/** An env as child_process.spawn takes it — unset values dropped, the rest as strings — which is what an adapter
+ *  may hand over (a number, an `undefined` from an optional setting) and what the frame's strict validation needs. */
+const stringEnv = (env) => Object.fromEntries(Object.entries(env || {}).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)]));
+
 export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pingMs = DEFAULT_PING_MS, ackEvery = ACK_EVERY, log = () => {}, onRelay = null }) {
   const execs = new Map();   // exec id -> handlers
   const closeFns = new Set();
@@ -112,7 +116,7 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
       execs.set(id, handlers);
       lastActiveAt = Date.now();
       try {
-        send({ type: 'exec', id, file: spec.file, args: spec.args, cwd: spec.cwd ?? null, env: spec.env, stdin: spec.stdin ?? null, detached: spec.detached !== false, ...(spec.reap ? { reap: true } : {}) });
+        send({ type: 'exec', id, file: spec.file, args: spec.args, cwd: spec.cwd ?? null, env: stringEnv(spec.env), stdin: spec.stdin ?? null, detached: spec.detached !== false, ...(spec.reap ? { reap: true } : {}) });
       } catch (err) {
         execs.delete(id);
         // A frame the protocol refuses carries its own code (EPROTO malformed, E2BIG too large); anything else is the

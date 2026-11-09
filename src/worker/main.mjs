@@ -48,7 +48,7 @@ export function readWorkerConfig(env = process.env) {
 }
 
 /** `worca worker [--check]` entry. Returns the exit code. */
-export async function runWorkerCli(args = [], { env = process.env, out = (l) => process.stdout.write(`${l}\n`), err = (l) => process.stderr.write(`${l}\n`), start = startWorker } = {}) {
+export async function runWorkerCli(args = [], { env = process.env, out = (l) => process.stdout.write(`${l}\n`), err = (l) => process.stderr.write(`${l}\n`), start = startWorker, signals = process } = {}) {
   if (args.includes('--check')) {
     out(JSON.stringify(await probeCapabilities({ env }), null, 2));
     return 0;
@@ -72,8 +72,8 @@ export async function runWorkerCli(args = [], { env = process.env, out = (l) => 
   const graceMs = Number(env.WORCA_SIGTERM_GRACE_MS) > 0 ? Number(env.WORCA_SIGTERM_GRACE_MS) : 5000;
   let stopping = false;
   const onSignal = () => { stopping = true; w.leave(graceMs); };
-  process.once('SIGTERM', onSignal);
-  process.once('SIGINT', onSignal);
+  signals.on('SIGTERM', onSignal);
+  signals.on('SIGINT', onSignal);
   // There is no reconnect once connected. But a FIRST connect that cannot be made — the controller's Service has no
   // ready endpoint yet, its name does not resolve yet — is retried for a short while: the token is still good, and
   // giving up at once would cost the run the controller's whole start timeout.
@@ -85,8 +85,11 @@ export async function runWorkerCli(args = [], { env = process.env, out = (l) => 
     if (code === 0 || w.connected || w.refusedStatus != null || stopping || Date.now() >= deadline) break;
     out(`worca worker: the controller at ${cfg.url} is not reachable yet (${w.endedWith}); trying again`);
     await new Promise((r) => setTimeout(r, Math.min(500 * attempt, 3000)));
+    if (stopping) break;   // told to stop while it waited: no new attempt (the previous one's exit code stands)
     w = start({ ...cfg, capabilities, log: out });
   }
+  signals.off('SIGTERM', onSignal);
+  signals.off('SIGINT', onSignal);
   await shim?.close();
   return code;
 }

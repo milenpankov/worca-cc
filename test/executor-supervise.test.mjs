@@ -10,7 +10,8 @@ import { useTempHome } from './helpers/temp-home.mjs';
 import { createLoopbackRegistry, createLoopbackSession } from './helpers/loopback-worker-session.mjs';
 import { superviseSpawn, missingOnWorker, engineOfSpawn } from '../src/core/engines/spawn.mjs';
 import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
-import { installExecutorFromEnv, keepsWorkerHome } from '../src/core/executor/controller.mjs';
+import { installExecutorFromEnv, keepsWorkerHome, reapWorkersAtBoot } from '../src/core/executor/controller.mjs';
+import { releaseWorker, workerHomeDir } from '../src/core/executor/index.mjs';
 import { scriptSpawnError } from '../src/core/graph/script-runner.mjs';
 import { overlayEnv, workerInstanceOf } from '../src/cli/container.mjs';
 import { FULL_VARIANT_ENGINES, fullVariantEngines } from '../src/core/executor/shared.mjs';
@@ -160,6 +161,28 @@ test("a run's worker HOME outlives a crash when a resume can still continue it",
   assert.equal(keepsWorkerHome({ status: 'interrupted', resume_point: null }), false, 'nothing can continue it');
   for (const status of ['done', 'stopped', 'error']) assert.equal(keepsWorkerHome({ status, resume_point: null }), false, status);
   assert.equal(keepsWorkerHome(null), false, 'no such run any more');
+});
+
+test("a chat's worker HOME goes with its thread, whichever way the thread went", async () => {
+  // A thread deleted while no remote executor is installed (a server that ran without workers for a while).
+  const gone = { kind: 'chat', id: 'deleted-locally' };
+  mkdirSync(workerHomeDir(gone), { recursive: true });
+  assert.equal(isRemoteExecutor(), false);
+  assert.equal(await releaseWorker(gone, { reason: 'thread deleted' }), false);
+  assert.equal(existsSync(workerHomeDir(gone)), false, 'removed even with workers off');
+  // Boot: the HOME of a thread that no longer exists is swept; a live thread's and one whose lookup fails stay.
+  const saved = Object.fromEntries(['WORCA_EXECUTOR', 'WORCA_EXECUTOR_BACKEND', 'WORCA_CONTROLLER_URL'].map((k) => [k, process.env[k]]));
+  process.env.WORCA_EXECUTOR = 'docker'; process.env.WORCA_EXECUTOR_BACKEND = 'in-process';
+  const { registry } = await installExecutorFromEnv({ log: () => {}, host: '127.0.0.1', port: 0 });
+  try {
+    for (const id of ['alive', 'orphan', 'unknown']) mkdirSync(workerHomeDir({ kind: 'chat', id }), { recursive: true });
+    const threadOf = (id) => { if (id === 'unknown') throw new Error('db busy'); return id === 'alive' ? { id } : null; };
+    await reapWorkersAtBoot({ rowOf: () => null, threadOf, log: () => {}, error: () => {} });
+    assert.deepEqual(['alive', 'orphan', 'unknown'].map((id) => existsSync(workerHomeDir({ kind: 'chat', id }))), [true, false, true], 'never deleted on doubt');
+  } finally {
+    await registry.closeAll('test over'); installExecutor(null);
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
 });
 
 test("a script's failed spawn keeps a worker's reason: an abort stays an abort, a lost worker stays retryable", () => {

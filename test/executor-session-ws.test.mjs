@@ -291,6 +291,11 @@ test('a stop while the worker is still starting ends the wait at once; the start
 test('an exec that cannot be sent says why: a malformed request is EPROTO, a worker that is gone is a lost worker', async () => {
   const s = await registry.acquire(RUN);
   const outcome = (spec) => new Promise((resolve) => s.exec(spec, { onStarted() {}, onLines() {}, onExit() {}, onLost() {}, onSpawnError: resolve }));
+  // What an adapter may put in an env (a number, an unset optional) is sent as spawn itself would take it.
+  const lines = [];
+  const ran = await new Promise((resolve) => s.exec({ file: '/bin/sh', args: ['-c', 'echo "$N:${UNSET-none}:$NIL"'], cwd: tmpdir(), env: { PATH: process.env.PATH, N: 5, UNSET: undefined, NIL: null }, stdin: null },
+    { onStarted() {}, onLines: (f) => lines.push(...f.lines), onExit: resolve, onLost() {}, onSpawnError: resolve }));
+  assert.deepEqual([ran.code, lines], [0, ['5:none:']]);
   const bad = await outcome({ file: '', args: [], cwd: tmpdir(), env: {}, stdin: null });
   assert.deepEqual([bad.code, bad.errorClass], ['EPROTO', undefined], 'not E2BIG: nothing about this request is too large');
   assert.match(bad.message, /invalid exec frame/);
@@ -397,6 +402,29 @@ test('a relay answer too large to send comes back as an error at once, not as si
     assert.equal(r.lines, null);
     assert.match(r.error, /relay: the answer could not be sent \(frame exceeds MAX_FRAME_BYTES/);
     assert.ok(Date.now() - t0 < 5000, 'answered at once');
+  } finally { await reg2.closeAll(); }
+});
+
+test('a worker that exits before it connects fails the start at once with its reason, not after the whole timeout', async () => {
+  let exited = false; const removed = [];
+  const b = {
+    async start(o) { return { workerId: o.workerId }; },
+    async probe() { return exited ? 'its container exited (code 78):\nworca-worker-entrypoint: /worca is not writable by uid 1000' : null; },
+    async remove(h, o) { removed.push(o.reason); }, async listWorkers() { return []; }, describe() { return {}; },
+  };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 60_000, probeMs: 20, log: () => {} });
+  await reg2.listen();
+  try {
+    const t0 = Date.now();
+    const p = reg2.acquire({ kind: 'run', id: 'dies' }).then(() => null, (e) => e);
+    await new Promise((r) => setTimeout(r, 60));
+    exited = true;
+    const err = await p;
+    assert.match(err.message, /worker w-run-[0-9a-f]+ for run:dies will not connect: its container exited \(code 78\):\nworca-worker-entrypoint: \/worca is not writable/);
+    assert.equal(err.errorClass, 'network');
+    assert.ok(Date.now() - t0 < 5000, 'long before the 60 s start timeout');
+    assert.deepEqual(reg2.snapshot(), []);
+    assert.deepEqual(removed, ['did not connect']);
   } finally { await reg2.closeAll(); }
 });
 
