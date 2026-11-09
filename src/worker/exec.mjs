@@ -5,10 +5,10 @@
 // the group, and report the exit. Dependency-light: the worker runs in a container that has
 // the worca package but no database and no server.
 import { spawn } from 'node:child_process';
-import { createInterface } from 'node:readline';
+import { StringDecoder } from 'node:string_decoder';
 import { userInfo } from 'node:os';
 import { existsSync } from 'node:fs';
-import { OUT_WINDOW, OUT_BATCH_LINES, OUT_FLUSH_MS } from '../core/executor/protocol.mjs';
+import { OUT_WINDOW, OUT_BATCH_LINES, OUT_FLUSH_MS, MAX_FRAME_BYTES } from '../core/executor/protocol.mjs';
 import { isLoopbackUrl, PROXY_NAMES } from '../core/executor/shared.mjs';
 
 /** Env vars a worker never hands to a child: its own credentials, and a proxy that points at the
@@ -44,6 +44,44 @@ export function childEnv(env, { home, workerPid = process.pid, user = null, work
   return out;
 }
 
+// Output bounds. One frame holds at most MAX_FRAME_BYTES of JSON, and a frame that does not fit throws in the
+// sender — from a stream or timer callback that would take the whole worker down, and the retry with it. So:
+// small lines are batched up to BATCH_CHARS; a long line travels alone, whole when it fits a frame (a multi-megabyte
+// JSON event of an engine does) and cut into pieces of SPLIT_CHARS when it cannot; a stream with no newline at all
+// is cut at MAX_PARTIAL_CHARS so the buffer never holds more.
+const BATCH_CHARS = 512 * 1024;
+const BIG_LINE_CHARS = 256 * 1024;
+const SPLIT_CHARS = 1024 * 1024;              // worst case 6 bytes of JSON per character: still one frame
+const MAX_PARTIAL_CHARS = 8 * 1024 * 1024;
+const FRAME_BUDGET = MAX_FRAME_BYTES - 64 * 1024;
+const fitsAFrame = (line) => Buffer.byteLength(JSON.stringify(line), 'utf8') <= FRAME_BUDGET;
+
+/**
+ * Lines out of a byte stream, as readline gives them (`\n` or `\r\n`, the last line with or without one), but with a
+ * bounded buffer: a run of `maxPartial` characters without a newline is handed over as a line of its own.
+ */
+export function lineSplitter(onLine, { maxPartial = MAX_PARTIAL_CHARS } = {}) {
+  const decoder = new StringDecoder('utf8');
+  let partial = '';
+  const emit = (line) => onLine(line.endsWith('\r') ? line.slice(0, -1) : line);
+  const feed = (text) => {
+    let start = 0;
+    for (;;) {
+      const nl = text.indexOf('\n', start);
+      if (nl < 0) break;
+      emit(partial + text.slice(start, nl));
+      partial = '';
+      start = nl + 1;
+    }
+    partial += text.slice(start);
+    while (partial.length > maxPartial) { onLine(partial.slice(0, maxPartial)); partial = partial.slice(maxPartial); }
+  };
+  return {
+    write(chunk) { feed(typeof chunk === 'string' ? chunk : decoder.write(chunk)); },
+    end() { const rest = partial + decoder.end(); partial = ''; if (rest) emit(rest); },
+  };
+}
+
 /** How long a killed child may keep its pipes before the worker stops waiting for 'close'. */
 const KILL_GRACE_MS = 2000;
 
@@ -56,18 +94,35 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
   try { user = userInfo().username || null; } catch { user = null; }
   const idleFns = new Set();
 
+  /** Send an output frame; never throw. What still cannot be sent is replaced by one line saying so. */
+  const sendOut = (frame) => {
+    try { send(frame); }
+    catch (err) {
+      log(`output frame dropped (${err?.message || err})`);
+      try { send({ ...frame, lines: [`[worca worker: ${frame.lines.length} line(s) of output dropped — too large for one frame]`] }); } catch { /* the socket is gone: its close reports it */ }
+    }
+  };
   const flush = (e, id) => {
     clearTimeout(e.flushTimer); e.flushTimer = null;
     for (const stream of ['out', 'err']) {
       const lines = e.pending[stream];
       if (!lines.length) continue;
       e.pending[stream] = [];
-      send({ type: 'out', id, seq: e.seq++, stream, lines });
+      sendOut({ type: 'out', id, seq: e.seq++, stream, lines });
     }
+    e.pendingChars = 0;
     if (!e.paused && e.seq - e.lastAck > OUT_WINDOW) { e.paused = true; try { e.child.stdout.pause(); e.child.stderr.pause(); } catch { /* ended */ } }
   };
   const queueLine = (e, id, stream, line) => {
+    if (line.length > BIG_LINE_CHARS) {
+      flush(e, id);   // what was pending goes first: order within the stream is kept
+      const pieces = fitsAFrame(line) ? [line] : Array.from({ length: Math.ceil(line.length / SPLIT_CHARS) }, (_, i) => line.slice(i * SPLIT_CHARS, (i + 1) * SPLIT_CHARS));
+      for (const piece of pieces) { e.pending[stream].push(piece); flush(e, id); }
+      return;
+    }
+    if (e.pendingChars + line.length > BATCH_CHARS) flush(e, id);
     e.pending[stream].push(line);
+    e.pendingChars += line.length;
     if (e.pending[stream].length >= OUT_BATCH_LINES) { flush(e, id); return; }
     if (!e.flushTimer) e.flushTimer = setTimeout(() => flush(e, id), OUT_FLUSH_MS);
   };
@@ -91,7 +146,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         send({ type: 'spawn-error', id, code: err.code ?? null, message: err.message });
         return;
       }
-      const e = { child, pending: { out: [], err: [] }, seq: 0, lastAck: -1, paused: false, flushTimer: null, grace: null, started: false, reported: false };
+      const e = { child, pending: { out: [], err: [] }, pendingChars: 0, seq: 0, lastAck: -1, paused: false, flushTimer: null, grace: null, started: false, reported: false };
       live.set(id, e);
       child.on('spawn', () => { e.started = true; send({ type: 'started', id, pid: child.pid }); });
       child.on('error', (err) => {
@@ -102,7 +157,9 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         if (!live.size) for (const fn of idleFns) fn();
       });
       for (const [stream, input] of [['out', child.stdout], ['err', child.stderr]]) {
-        createInterface({ input }).on('line', (line) => queueLine(e, id, stream, line));
+        const lines = lineSplitter((line) => queueLine(e, id, stream, line));
+        input.on('data', (chunk) => lines.write(chunk));
+        input.on('end', () => lines.end());
       }
       child.on('close', (code, signal) => {
         if (e.reported) return;

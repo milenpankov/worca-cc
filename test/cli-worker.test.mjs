@@ -77,3 +77,56 @@ test("a worker child's env is the controller's composed env with this container'
   // A path the backend passed into this container that does not exist here either is no better: not used.
   assert.equal(childEnv({ SSL_CERT_FILE: '/tmp/x/bundle.pem' }, { workerEnv: { SSL_CERT_FILE: '/tmp/x/bundle.pem' }, exists: () => false }).SSL_CERT_FILE, undefined);
 });
+
+import { createExecRunner, lineSplitter } from '../src/worker/exec.mjs';
+import { encodeFrame, MAX_FRAME_BYTES } from '../src/core/executor/protocol.mjs';
+import { tmpdir } from 'node:os';
+
+test('lineSplitter: lines as readline gives them, with a bounded buffer for a stream that has no newline', () => {
+  const got = [];
+  const s = lineSplitter((l) => got.push(l), { maxPartial: 8 });
+  s.write(Buffer.from('one\ntw')); s.write('o\r\n\nlast');
+  s.end();
+  assert.deepEqual(got, ['one', 'two', '', 'last']);
+  got.length = 0;
+  const t = lineSplitter((l) => got.push(l), { maxPartial: 8 });
+  t.write('abcdefghijklmnopqrstu'); t.write('vwx\ny'); t.end();
+  assert.deepEqual(got, ['abcdefgh', 'ijklmnop', 'qrstuvwx', 'y'], 'never more than maxPartial characters held');
+  got.length = 0;
+  const u = lineSplitter((l) => got.push(l));
+  const euro = Buffer.from('€uro\n');
+  u.write(euro.subarray(0, 2)); u.write(euro.subarray(2)); u.end();
+  assert.deepEqual(got, ['€uro'], 'a multi-byte character split across chunks is kept whole');
+});
+
+test('a worker survives output no frame can hold: long lines travel alone or in pieces, nothing throws', { timeout: 60000 }, async () => {
+  const frames = [];
+  // The real sender: a frame that does not encode throws, exactly as on the socket.
+  const runner = createExecRunner({ send: (f) => { encodeFrame(f); frames.push(f); }, home: tmpdir(), log: () => {} });
+  const program = [
+    "process.stdout.write('small\\n');",
+    "process.stdout.write('a'.repeat(6 * 1024 * 1024) + '\\n');",            // fits one frame: an engine's large JSON event
+    "process.stdout.write('\\u0001'.repeat(3 * 1024 * 1024) + '\\n');",     // 6 bytes of JSON per character: fits none whole
+    "process.stdout.write('tail\\n');",
+    "process.stdout.write('z'.repeat(9 * 1024 * 1024));",                      // no newline at all
+  ].join('');
+  const done = new Promise((resolve) => runner.onIdle(resolve));
+  runner.start({ type: 'exec', id: 'x1', file: process.execPath, args: ['-e', program], cwd: tmpdir(), env: { PATH: process.env.PATH }, stdin: null, detached: false });
+  // Ack as the controller would, so the send window never holds the child back.
+  const acker = setInterval(() => { const last = frames.filter((f) => f.type === 'out').at(-1); if (last) runner.ack('x1', last.seq); }, 5);
+  await done;
+  clearInterval(acker);
+  const exit = frames.find((f) => f.type === 'exit');
+  assert.deepEqual([exit?.code, exit?.signal], [0, null], 'the child ran to its end; the worker did not crash');
+  const outFrames = frames.filter((f) => f.type === 'out' && f.stream === 'out');
+  for (const f of outFrames) assert.ok(Buffer.byteLength(JSON.stringify(f), 'utf8') <= MAX_FRAME_BYTES);
+  const lines = outFrames.flatMap((f) => f.lines);
+  assert.equal(lines[0], 'small');
+  assert.equal(lines[1].length, 6 * 1024 * 1024, 'a long line that fits a frame arrives whole');
+  const tailAt = lines.indexOf('tail');
+  const control = lines.slice(2, tailAt);
+  assert.ok(control.length > 1, 'a line no frame can hold is cut into pieces');
+  assert.equal(control.join('').length, 3 * 1024 * 1024, 'and none of it is lost');
+  assert.equal(lines.slice(tailAt + 1).join('').length, 9 * 1024 * 1024, 'the newline-free tail arrives complete, in bounded pieces');
+  assert.deepEqual(outFrames.map((f) => f.seq), outFrames.map((_, i) => i), 'sequence numbers stay dense');
+});
