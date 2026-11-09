@@ -33,6 +33,13 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
     ws.send(encodeFrame(frame));
   };
   const trySend = (frame) => { try { send(frame); } catch { /* closing */ } };
+  /** Answer a worker's relay. An answer that cannot be sent (too large for a frame) is answered with an error instead:
+   *  silence would leave the chat's tool call waiting for the shim's own timeout. */
+  const relayResult = (id, lines, error) => {
+    const e = error == null ? null : String(error).slice(0, 4000);
+    try { send({ type: 'relay-result', id, lines, error: e }); }
+    catch (err) { trySend({ type: 'relay-result', id, lines: null, error: `relay: the answer could not be sent (${String(err?.message || err).slice(0, 200)})` }); }
+  };
 
   const settle = (reason) => {
     if (closed) return;
@@ -63,8 +70,8 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
       case 'relay':
         if (!onRelay) { trySend({ type: 'relay-result', id: frame.id, lines: null, error: 'relay is not available' }); return; }
         Promise.resolve().then(() => onRelay(frame)).then(
-          (r) => trySend({ type: 'relay-result', id: frame.id, lines: r?.lines ?? null, error: r?.error ?? null }),
-          (err) => trySend({ type: 'relay-result', id: frame.id, lines: null, error: err?.message || 'relay failed' }),
+          (r) => relayResult(frame.id, r?.lines ?? null, r?.error ?? null),
+          (err) => relayResult(frame.id, null, err?.message || 'relay failed'),
         );
         return;
       case 'log': log(`[worker ${workerId}] ${frame.level}: ${frame.msg}`); return;
@@ -105,7 +112,7 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
       execs.set(id, handlers);
       lastActiveAt = Date.now();
       try {
-        send({ type: 'exec', id, file: spec.file, args: spec.args, cwd: spec.cwd ?? null, env: spec.env, stdin: spec.stdin ?? null, detached: spec.detached !== false });
+        send({ type: 'exec', id, file: spec.file, args: spec.args, cwd: spec.cwd ?? null, env: spec.env, stdin: spec.stdin ?? null, detached: spec.detached !== false, ...(spec.reap ? { reap: true } : {}) });
       } catch (err) {
         execs.delete(id);
         // A frame the protocol refuses carries its own code (EPROTO malformed, E2BIG too large); anything else is the

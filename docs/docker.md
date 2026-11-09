@@ -338,7 +338,7 @@ URL from `docker compose logs teams-tunnel`.
 | `WORCA_PROJECTS_MOUNT` | same as above | mount it elsewhere inside (loses parity) |
 | `WORCA_TAG` | `latest` | image tag |
 | `WORCA_IMAGE` | `ghcr.io/sinishadjukic/worca` | image name without the tag (a mirror, or `worca` for a local build); the default worker image is `<WORCA_IMAGE>-worker` |
-| `WORCA_WORKER_IMAGE` | `<WORCA_IMAGE>-worker:<tag>-{engine}` | with the `workers` overlay: the worker image per engine (`{engine}` is the engine of the run or chat, and of each helper job); `self` = the worca image ([Workers](#workers-agents-in-their-own-containers)) |
+| `WORCA_WORKER_IMAGE` | derived: `<WORCA_IMAGE>-worker:<tag>-<engine>` | with the `workers` overlay: the worker image per engine (`{engine}` is the engine of the run or chat, and of each helper job); `self` = the worca image ([Workers](#workers-agents-in-their-own-containers)) |
 | `WORCA_WORKER_MEM`, `WORCA_WORKER_CPUS` | `4g`, `2` | each worker container's memory and CPU limits |
 | `WORCA_WORKER_MAX` | `20` | worker containers at once |
 | `WORCA_WORKER_PORT` | `4319` | the controller's worker listener on the compose network; never published |

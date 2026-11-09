@@ -21,7 +21,7 @@ export function createInProcessBackend({ homeRoot, capabilities = null, log = ()
       mkdirSync(home, { recursive: true });
       const caps = capabilities ?? await probeCapabilities({ engines: [] });
       const w = startWorker({ url: controllerUrl, token, scope, workerId, home, capabilities: caps, idleMs, log });
-      const handle = { workerId, scopeKey, engine, home, worker: w, done: w.done };
+      const handle = { workerId, scopeKey, engine, home, worker: w, done: w.done, own: true };   // cannot outlive this process: never an orphan
       workers.set(workerId, handle);
       started.push(handle);
       w.done.then(() => workers.delete(workerId));

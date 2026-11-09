@@ -612,7 +612,9 @@ export async function runScriptExecution(ctx) {
     // and windowsVerbatimArguments stays off (spawnScript sets it for
     // stdoutMode 'capture' only), which is what quotes a path with a space.
     const file = programFile();
-    const probe = await probePython();
+    // On a worker the interpreter is the worker image's, not this container's: nothing to probe here (a worker
+    // without one fails the spawn, and says so).
+    const probe = spawnsRemotely() ? { ok: true, command: ['python3'] } : await probePython();
     if (!probe.ok) throw scriptError(pythonMissingSentence(key));
     const [exe, ...pre] = probe.command;
     run = await spawnOrThrow({ file: exe, args: [...pre, '-u', PY_HARNESS_PATH, file], cwd: envelope.ctx.cwd,

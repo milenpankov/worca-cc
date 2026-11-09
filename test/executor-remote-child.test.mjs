@@ -18,7 +18,9 @@ const lines = (stream) => { const out = []; createInterface({ input: stream }).o
 test('the exec frame carries file/args/cwd/env/stdin; stdin on the child is a stub', () => {
   const s = fakeSession();
   const child = createRemoteChild(s, spec);
-  assert.deepEqual(s.specs, [{ file: 'claude', args: ['-p'], cwd: '/w', env: { PATH: '/bin' }, stdin: 'hello', detached: true }]);
+  assert.deepEqual(s.specs, [{ file: 'claude', args: ['-p'], cwd: '/w', env: { PATH: '/bin' }, stdin: 'hello', detached: true, reap: false }]);
+  createRemoteChild(s, { ...spec, reap: true });
+  assert.equal(s.specs[1].reap, true, "an engine's spawn asks the worker to reap its process group at the end");
   assert.equal(child.remote, true);
   assert.equal(child.id, 'x1');
   assert.equal(child.workerId, 'w9');

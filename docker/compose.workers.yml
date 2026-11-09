@@ -18,7 +18,10 @@ services:
       WORCA_DOCKER_HOST: tcp://docker-proxy:2375
       WORCA_WORKER_PORT: ${WORCA_WORKER_PORT:-4319}
       WORCA_CONTROLLER_URL: ws://worca:${WORCA_WORKER_PORT:-4319}
-      WORCA_WORKER_IMAGE: ${WORCA_WORKER_IMAGE:-${WORCA_IMAGE:-ghcr.io/sinishadjukic/worca}-worker:${WORCA_TAG:-latest}-{engine}}
+      # Empty = derived by the controller from its own image: <WORCA_IMAGE>-worker:<WORCA_TAG>-<engine>.
+      # (No default with `{engine}` here: Compose would end the `${…}` at that brace and append a stray `}`
+      # to every value you do set.)
+      WORCA_WORKER_IMAGE: ${WORCA_WORKER_IMAGE:-}
       WORCA_WORKER_MEM: ${WORCA_WORKER_MEM:-4g}
       WORCA_WORKER_CPUS: ${WORCA_WORKER_CPUS:-2}
       WORCA_WORKER_MAX: ${WORCA_WORKER_MAX:-20}

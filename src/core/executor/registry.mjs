@@ -25,21 +25,17 @@ import { decodeFrame, encodeFrame, PROTOCOL_VERSION, WORKER_WS_PATH, WS_MAX_PAYL
 export { WORKER_WS_PATH };
 import { createWorkerSession } from './session.mjs';
 import { normalizeScope, scopeKey } from './scope.mjs';
-import { startFailure } from './shared.mjs';
+import { startFailure, abortError, sleep, envInt as sharedEnvInt } from './shared.mjs';
 
 export const DEFAULT_WORKER_PORT = 4319;
 const HELLO_TIMEOUT_MS = 10_000;
 const SWEEP_MS = 30_000;
 const WAIT_POLL_MS = 2_000;
+const CAP_WAIT_MS = 10 * 60_000;
 
-const envInt = (name, def) => { const n = Number(process.env[name]); return Number.isFinite(n) && n > 0 ? n : def; };
+const envInt = (name, def) => sharedEnvInt(process.env, name, def);
 
 
-const sleep = (ms, signal) => new Promise((resolve) => {
-  const t = setTimeout(done, ms);
-  function done() { clearTimeout(t); signal?.removeEventListener('abort', done); resolve(); }
-  signal?.addEventListener('abort', done, { once: true });
-});
 
 export function createWorkerRegistry({
   backend,
@@ -49,7 +45,9 @@ export function createWorkerRegistry({
   maxWorkers = envInt('WORCA_WORKER_MAX', 20),
   startTimeoutMs = envInt('WORCA_WORKER_START_TIMEOUT_MS', 120_000),
   chatIdleMs = envInt('WORCA_WORKER_CHAT_IDLE_MS', 15 * 60_000),
-  tokenTtlMs = 120_000,
+  tokenTtlMs = null,        // how long a worker has to present its token once its container exists; default: startTimeoutMs
+  capWaitMs = envInt('WORCA_WORKER_CAP_WAIT_MS', CAP_WAIT_MS),
+  capPollMs = WAIT_POLL_MS,
   pingMs = undefined,
   bootId = `ctl-${randomUUID()}`,
   log = (msg) => console.log(`[worca-workers] ${msg}`),
@@ -58,7 +56,6 @@ export function createWorkerRegistry({
   if (!backend) throw new Error('createWorkerRegistry: a backend is required');
   const entries = new Map();   // `${scopeKey}|${class}` -> { scope, key, ek, engine, state:'starting'|'ready'|'closing', workerId, token, handle, session, waiters:[], startedAt, idleMs, timer, ctl, abandoned }
   const tokens = new Map();    // token -> { key, ek, workerId, mintedAt, used }
-  const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' });
   const scopeEntries = (key) => [...entries.values()].filter((e) => e.key === key);
   /** What tells a scope's workers apart: the backend's class for the engine (its image), else the engine name. */
   const classOf = async (engine) => {
@@ -82,10 +79,11 @@ export function createWorkerRegistry({
   };
   // A token lives as long as the start it belongs to: while the backend is still bringing the container up (an image
   // pull, a Pending pod — minutes on a cold node) it cannot expire, and once the container exists (`armedAt`) the
-  // worker has tokenTtlMs to present it. A start that ended, either way, takes its token with it.
+  // worker has as long to present it as the registry waits for its hello (startTimeoutMs, so raising that timeout
+  // really gives a slow worker longer). A start that ended, either way, takes its token with it.
   const tokenDead = (t) => {
     const e = entries.get(t.ek);
-    return t.used || !e || e.state !== 'starting' || (t.armedAt != null && Date.now() - t.armedAt > tokenTtlMs);
+    return t.used || !e || e.state !== 'starting' || (t.armedAt != null && Date.now() - t.armedAt > (tokenTtlMs ?? startTimeoutMs));
   };
   const usableToken = (token) => {
     const t = tokens.get(token);
@@ -242,6 +240,7 @@ export function createWorkerRegistry({
       if (!s) throw new Error('acquire: a run or chat scope is required');
       const key = scopeKey(s);
       const want = (typeof engine === 'string' && engine.trim()) || s.engine || null;
+      let waitingSince = null;
       for (;;) {
         if (signal?.aborted) throw abortError();
         if (closing) throw startFailure('the server is shutting down');
@@ -250,8 +249,17 @@ export function createWorkerRegistry({
         entry ||= entries.get(ek) || null;
         if (entry?.state === 'ready') { entry.session.touch(); return entry.session; }
         if (entry?.state === 'starting') return waitFor(entry, signal);
-        if (entries.size < maxWorkers) return waitFor(begin(s, key, ek, want), signal);
-        await sleep(WAIT_POLL_MS, signal);
+        // The cap bounds how many scopes hold workers. A scope that already holds one never waits for its second
+        // (a helper job on another engine's image): every such wait holds a slot, and a few of them deadlock.
+        if (entries.size < maxWorkers || scopeEntries(key).length) return waitFor(begin(s, key, ek, want), signal);
+        // Full. A chat worker with nothing running gives way (its thread gets a fresh one on its next turn)…
+        const idle = [...entries.values()].filter((e) => e.state === 'ready' && e.idleMs != null && e.session.liveExecCount === 0)
+          .sort((a, b) => a.session.lastActiveAt - b.session.lastActiveAt)[0];
+        if (idle) { log(`worker cap (${maxWorkers}) reached: releasing idle ${idle.key} for ${key}`); await releaseEntry(idle, { reason: 'evicted: worker cap' }); continue; }
+        // …else this waits, says so once, and gives up as a start failure (the run pauses or retries) rather than hang.
+        if (waitingSince == null) { waitingSince = Date.now(); log(`${key} waits for a free worker: all ${maxWorkers} (WORCA_WORKER_MAX) are in use`); }
+        if (Date.now() - waitingSince > capWaitMs) throw startFailure(`no free worker for ${key} after ${Math.round(capWaitMs / 1000)} s: all ${maxWorkers} (WORCA_WORKER_MAX) are in use`);
+        await sleep(capPollMs, signal);
       }
     },
 

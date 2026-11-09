@@ -10,11 +10,14 @@ import { createBackend } from './backends/index.mjs';
 import { worcaHome } from '../projects.mjs';
 import { readEgressPolicy } from '../egress-proxy.mjs';
 import { withBillTo } from '../billing.mjs';
+import { DEFAULT_RELAY_PORT } from '../../worker/relay-shim.mjs';
 
 export { isRemoteExecutor, releaseWorker, touchWorker } from './index.mjs';
 export { withExecutorScope } from './scope.mjs';
 export { bridgedModelRefusal } from './gates.mjs';
-export { DEFAULT_RELAY_PORT as WORKER_RELAY_PORT } from '../../worker/relay-shim.mjs';
+/** The loopback port of a worker's chat relay shim. Set on the CONTROLLER (it writes the URL into the chat's MCP
+ *  config) and handed to every worker (shared.mjs WORKER_PASS_THROUGH), so both sides always agree. */
+export const WORKER_RELAY_PORT = Number(process.env.WORCA_WORKER_RELAY_PORT) > 0 ? Number(process.env.WORCA_WORKER_RELAY_PORT) : DEFAULT_RELAY_PORT;
 
 /** The worker registry under a remote executor (src/core/executor/registry.mjs), else null. */
 let WORKERS = null;

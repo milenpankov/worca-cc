@@ -14,6 +14,7 @@
 // undici Agent (a dispatcher of our own bypasses the proxy-aware global one). Errors from the
 // API arrive as a `Status` body; they surface as `K8sApiError { status, reason, message }`.
 import { readFileSync } from 'node:fs';
+import { sleep } from '../shared.mjs';
 import { fetch, Agent } from 'undici';
 
 const SA_DIR = '/var/run/secrets/kubernetes.io/serviceaccount';
@@ -34,12 +35,6 @@ export class K8sApiError extends Error {
 
 const readText = (file) => { try { return readFileSync(file, 'utf8'); } catch { return null; } };
 const isAbort = (err) => err?.name === 'AbortError' || err?.code === 'ABORT_ERR' || err?.cause?.name === 'AbortError';
-const sleep = (ms, signal) => new Promise((resolve) => {
-  if (signal?.aborted) return resolve();
-  const t = setTimeout(done, ms);
-  function done() { clearTimeout(t); signal?.removeEventListener('abort', done); resolve(); }
-  signal?.addEventListener('abort', done, { once: true });
-});
 
 /** The API endpoint, token/CA files and namespace from the environment (pure; no I/O). */
 export function k8sApiConfig(env = process.env) {

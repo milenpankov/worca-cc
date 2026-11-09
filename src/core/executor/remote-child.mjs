@@ -22,7 +22,7 @@ const DRAIN_GRACE_MS = 2000;
  * @returns {EventEmitter & { remote: true, id: string, pid: number|null, exitCode: number|null, signalCode: string|null,
  *   stdout: PassThrough, stderr: PassThrough, stdin: object, kill: (sig?: string) => boolean }}
  */
-export function createRemoteChild(session, { file, args, cwd, env, stdin = null, displayBin = file, detached = true }) {
+export function createRemoteChild(session, { file, args, cwd, env, stdin = null, displayBin = file, detached = true, reap = false }) {
   const child = new EventEmitter();
   child.remote = true;
   child.workerId = session.workerId;
@@ -51,7 +51,7 @@ export function createRemoteChild(session, { file, args, cwd, env, stdin = null,
     child.stderr.end();
   };
 
-  const id = session.exec({ file, args, cwd, env, stdin, detached }, {
+  const id = session.exec({ file, args, cwd, env, stdin, detached, reap: reap === true }, {
     onStarted: ({ pid }) => { child.pid = pid; child.emit('spawn'); },
     onLines: ({ stream, lines, more = false }) => {
       if (ended) return;

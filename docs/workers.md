@@ -68,7 +68,8 @@ gets one worker per image, and they end together.
 | `WORCA_EXECUTOR_BACKEND=in-process` | controller | the worker runs inside the server process over a real socket, no container: for trying the path on one machine, and for tests |
 | `WORCA_WORKER_PORT` | controller | the worker listener (default 4319); never publish it to people |
 | `WORCA_CONTROLLER_URL` | controller | the URL workers are told to connect to (`ws://<service>:4319`). **Required** with `docker` and `kubernetes` (the Compose overlay and the chart set it): a worker in another container cannot dial the controller's loopback, and the server refuses to start without it |
-| `WORCA_WORKER_MAX` | controller | containers at once (default 20); runs are also bounded by Settings › Runs |
+| `WORCA_WORKER_MAX` | controller | how many scopes may hold workers at once (default 20); runs are also bounded by Settings › Runs. A run's second worker (a helper job on another engine's image) never waits for the cap. When it is reached, an idle chat worker gives way; otherwise the newcomer waits `WORCA_WORKER_CAP_WAIT_MS` (10 min) and then fails as a start failure, which the run's failure policy pauses or retries |
+| `WORCA_WORKER_RELAY_PORT` | controller | the loopback port of a worker's chat relay (default 4318). Set it on the controller: it writes the port into the chat's tool configuration and hands the same value to every worker |
 | `WORCA_WORKER_ENGINE` | controller | the engine a worker gets when a spawn names none and the scope has none (default: the `run.engine` setting) |
 | `WORCA_WORKER_FULL_ENGINES` | controller | engines whose worker image has a `-full` build (default `claude,all`, what is published): the `full` variant applies to these, the others run their slim image |
 | `WORCA_WORKER_PASS_ENV` | worker | more of the worker's own variable names to hand to its children ([Credentials on workers](#credentials-on-workers)) |
@@ -77,7 +78,7 @@ gets one worker per image, and they end together.
 | `WORCA_WORKER_START_TIMEOUT_MS` | controller | how long a worker may take to connect (default 2 min) |
 | `WORCA_DB_DIR` | controller | the database's own directory, off the shared volume (SQLite's WAL needs a local filesystem) |
 | `WORCA_CONTROLLER_URL`, `WORCA_WORKER_TOKEN`, `WORCA_WORKER_SCOPE`, `WORCA_WORKER_ID` | worker | the assignment, set by the controller's backend |
-| `WORCA_WORKER_HOME`, `WORCA_WORKER_IDLE_MS`, `WORCA_WORKER_RELAY_PORT` | worker | optional |
+| `WORCA_WORKER_HOME`, `WORCA_WORKER_IDLE_MS` | worker | optional |
 
 `/api/health` carries an `executor` object under a remote executor.
 
@@ -140,6 +141,13 @@ workers use the token or the broker.
 - **The credential broker** must be reachable from the worker network (`WORCA_BROKER_URL` names
   a service, not loopback).
 - **Agent isolation** (`WORCA_AGENT_USER`, sudo) is not used on a worker: the container is the isolation.
+- **Checks move to the worker.** What the controller checks before a local spawn — the engine's binary and
+  sign-in at run start and before a chat turn, a Python interpreter for a python script node — is not checked on
+  the controller for anything that runs on a worker image (Claude Code, which the controller has, stays checked).
+  A worker that lacks the engine refuses the spawn with the image setting to fix; a missing interpreter fails the
+  script's spawn.
+- **Leftovers.** When an engine's step ends, what it left running in its process group ends with it, as on one
+  machine. A script node's background processes are its own.
 - **Container-local paths.** The controller composes each spawn's environment in its own container. On the
   worker, that container's own CA bundle and cache directories replace the controller's, and a CA file path that
   does not exist there is dropped. A corporate CA must be mounted in the workers too (`WORCA_CA_CERT_FILE`; the

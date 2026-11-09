@@ -578,3 +578,24 @@ test('entrypoint.sh: `worca worker` execs at once, before any volume preparation
   assert.match(block, /^\s+exec "\$@"$/m);
   assert.doesNotMatch(block, /setpriv|sudo|chown/);
 });
+
+import { spawnSync as spawnSyncCompose } from 'node:child_process';
+import { tmpdir as tmpdirCompose } from 'node:os';
+
+test('compose renders the worker settings you set exactly as set (no brace of `{engine}` inside an interpolation)', (t) => {
+  const here = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'docker');
+  // The rule, for every compose file: `{engine}` inside `${…}` ends the interpolation at its brace.
+  for (const f of ['compose.yml', 'compose.workers.yml', 'compose.egress.yml', 'compose.broker.yml', 'compose.dev.yml']) {
+    assert.doesNotMatch(readFileSync(join(here, f), 'utf8'), /\$\{[^}\n]*\{engine\}/, `${f}: a default containing {engine}`);
+  }
+  assert.match(readFileSync(join(here, 'compose.workers.yml'), 'utf8'), /\n\s+WORCA_WORKER_IMAGE: \$\{WORCA_WORKER_IMAGE:-\}\n/);
+  // And what Docker Compose itself makes of it, where it is installed.
+  const render = (extra) => spawnSyncCompose('docker', ['compose', '-f', 'compose.yml', '-f', 'compose.workers.yml', 'config', '--format', 'json'],
+    { cwd: here, encoding: 'utf8', env: { ...process.env, WORCA_PROJECTS: tmpdirCompose(), ...extra }, timeout: 60000 });
+  const probe = render({});
+  if (probe.error || probe.status !== 0) { t.diagnostic(`docker compose is not usable here (${probe.error?.message || `exit ${probe.status}`}): rendered values not checked`); return; }
+  const image = (r) => JSON.parse(r.stdout).services.worca.environment.WORCA_WORKER_IMAGE;
+  assert.equal(image(probe) ?? '', '', 'unset: empty, and the controller derives the image from its own');
+  assert.equal(image(render({ WORCA_WORKER_IMAGE: 'self' })), 'self');
+  assert.equal(image(render({ WORCA_WORKER_IMAGE: 'registry.example/worker:1-{engine}' })), 'registry.example/worker:1-{engine}');
+});

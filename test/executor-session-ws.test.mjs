@@ -321,6 +321,85 @@ test('a worker whose container takes longer to come up than the token lives stil
   } finally { await reg2.closeAll(); }
 });
 
+test('at the worker cap: a scope\'s second worker never waits, an idle chat worker gives way, and a full house fails the start instead of hanging', async () => {
+  const mk = async (o = {}) => {
+    const b = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+    const r = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, chatIdleMs: 60_000, maxWorkers: 1, capWaitMs: 150, capPollMs: 20, log: (m) => o.logs?.push(m), ...o.opts });
+    await r.listen();
+    return { b, r };
+  };
+  const logs = [];
+  const { b, r } = await mk({ logs });
+  try {
+    assert.equal(b.started.length, 0);
+    const first = await r.acquire({ kind: 'run', id: 'a' }, { engine: 'codex' });
+    // A helper job of the same run on another engine: over the cap, but never made to wait for it (that wait holds a slot).
+    const second = await r.acquire({ kind: 'run', id: 'a' }, { engine: 'claude' });
+    assert.notEqual(second, first);
+    assert.equal(b.started.at(-1).own, true, 'an in-process worker is always this process\'s own');
+    // Another run finds every slot taken by working runs: it waits, says so, and fails as a start failure.
+    const err = await r.acquire({ kind: 'run', id: 'b' }, { engine: 'claude' }).then(() => null, (e) => e);
+    assert.match(err.message, /no free worker for run:b after 0 s: all 1 \(WORCA_WORKER_MAX\) are in use/);
+    assert.deepEqual([err.code, err.errorClass], ['EWORKERSTART', 'network'], 'the run pauses or retries; it does not hang');
+    assert.ok(logs.some((l) => /run:b waits for a free worker/.test(l)), logs.join('\n'));
+  } finally { await r.closeAll(); }
+  // A chat worker with nothing running gives way to a run.
+  const two = await mk({ logs });
+  try {
+    await two.r.acquire({ kind: 'chat', id: 'idle-thread' }, { engine: 'claude' });
+    const run = await two.r.acquire({ kind: 'run', id: 'c' }, { engine: 'claude' });
+    assert.equal(run.scope.id, 'c');
+    assert.deepEqual(two.r.snapshot().map((e) => e.scope.id), ['c'], 'the idle chat worker was released for it');
+    assert.ok(logs.some((l) => /worker cap \(1\) reached: releasing idle chat:idle-thread for run:c/.test(l)));
+  } finally { await two.r.closeAll(); }
+});
+
+test('a token lives as long as the registry waits for the hello, unless told otherwise', async () => {
+  const captured = [];
+  const b = { async start(o) { captured.push(o); return { workerId: o.workerId }; }, async remove() {}, async listWorkers() { return []; }, describe() { return {}; } };
+  const status = (reg, token) => new Promise((resolve) => {
+    const ws = new WebSocket(`${reg.controllerUrl}/worker`, { headers: { authorization: `Bearer ${token}` } });
+    ws.on('unexpected-response', (_req, res) => { resolve(res.statusCode); ws.terminate(); });
+    ws.on('open', () => { resolve('open'); ws.terminate(); });
+    ws.on('error', () => {});
+  });
+  // An explicit, short time to live: a worker that shows up after it is refused.
+  const short = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 2000, tokenTtlMs: 40, log: () => {} });
+  await short.listen();
+  try {
+    short.acquire({ kind: 'run', id: 's' }).catch(() => {});
+    for (let i = 0; i < 100 && captured.length < 1; i++) await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(await status(short, captured[0].token), 401);
+  } finally { await short.closeAll(); }
+  // The default: as long as the start timeout — raising WORCA_WORKER_START_TIMEOUT_MS gives a slow worker that long.
+  const long = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 2000, log: () => {} });
+  await long.listen();
+  try {
+    long.acquire({ kind: 'run', id: 'l' }).catch(() => {});
+    for (let i = 0; i < 100 && captured.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(await status(long, captured[1].token), 'open');
+  } finally { await long.closeAll(); }
+});
+
+test('a relay answer too large to send comes back as an error at once, not as silence', async () => {
+  const b2 = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  const reg2 = createWorkerRegistry({ backend: b2, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, log: () => {},
+    onRelay: async (f) => (f.line === 'big' ? { lines: ['x'.repeat(9 * 1024 * 1024)], error: null } : { lines: ['ok'], error: null }) });
+  await reg2.listen();
+  try {
+    await reg2.acquire({ kind: 'chat', id: 'relay' });
+    const worker = b2.started.at(-1).worker;
+    assert.deepEqual(await worker.relay('tok', 'small'), { lines: ['ok'], error: null });
+    const t0 = Date.now();
+    const r = await worker.relay('tok', 'big');
+    assert.equal(r.lines, null);
+    assert.match(r.error, /relay: the answer could not be sent \(frame exceeds MAX_FRAME_BYTES/);
+    assert.ok(Date.now() - t0 < 5000, 'answered at once');
+  } finally { await reg2.closeAll(); }
+});
+
 test('a malformed WebSocket frame before the hello closes that socket and nothing else', async () => {
   const captured = [];
   const b = { start(o) { captured.push(o); return new Promise(() => {}); }, async remove() {}, async listWorkers() { return []; }, describe() { return {}; } };

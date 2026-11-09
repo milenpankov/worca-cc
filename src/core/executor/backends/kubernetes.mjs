@@ -37,7 +37,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { createK8sApi, K8sApiError } from './k8s-api.mjs';
-import { startFailure, passThroughEnv, defaultWorkerEngine, fullVariantEngines } from '../shared.mjs';
+import { startFailure, passThroughEnv, defaultWorkerEngine, fullVariantEngines, envInt, abortError } from '../shared.mjs';
 import {
   renderPodSpec, resolveImage, normalizeVariant, podName, workerSelector, workerContainer, assertAllowedEnv,
   DEFAULT_IMAGE_PATTERN, ANNOTATION_SCOPE, LABEL_ENGINE, LABEL_BOOT, scopeLabel,
@@ -56,7 +56,6 @@ export const FATAL_WAITING_REASONS = Object.freeze(['ImagePullBackOff', 'ErrImag
 const FATAL_WAITING = new Set(FATAL_WAITING_REASONS);
 
 const packageVersion = () => { try { return createRequire(import.meta.url)('../../../../package.json').version; } catch { return 'latest'; } };
-const envInt = (env, name, def) => { const n = Number(env[name]); return Number.isFinite(n) && n > 0 ? n : def; };
 const envJson = (env, name) => {
   const raw = String(env[name] || '').trim();
   if (!raw) return null;
@@ -200,8 +199,8 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
     return new Promise((resolve, reject) => {
       const finish = (ok, value) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); ctl.abort(); (ok ? resolve : reject)(value); };
       // The registry gave up on this start (nobody waits for it any more): stop watching; start() deletes the pod.
-      const onAbort = () => finish(false, Object.assign(new Error('aborted'), { name: 'AbortError' }));
-      if (signal?.aborted) { settled = true; reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); return; }
+      const onAbort = () => finish(false, abortError());
+      if (signal?.aborted) { settled = true; reject(abortError()); return; }
       signal?.addEventListener('abort', onAbort, { once: true });
       const rejectWithLog = async (headline) => {
         if (settled) return;

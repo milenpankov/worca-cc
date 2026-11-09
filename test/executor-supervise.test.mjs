@@ -137,6 +137,9 @@ test('what a worker container inherits is one rule for every backend', async () 
     NO_PROXY: 'localhost,worca,broker',                  // the controller and the broker are never reached through the proxy
   }, "no credential, no loopback or unreadable proxy, and not the controller's own derived CA bundle path");
   assert.ok(!WORKER_PASS_THROUGH.some((n) => /TOKEN|SECRET|API_KEY/.test(n)));
+  // The chat relay port is the controller's setting: workers are handed the same value, so the shim listens where the
+  // controller told the chat's MCP child to post.
+  assert.equal(passThroughEnv({ WORCA_WORKER_RELAY_PORT: '5318' }).WORCA_WORKER_RELAY_PORT, '5318');
   // Docker and Kubernetes hand a worker the same inherited set; each adds only its assignment and its paths.
   const assignment = { scopeKey: 'run:r1', workerId: 'w1', token: 't', controllerUrl: 'ws://worca:4319', idleMs: null };
   const d = dockerWorkerEnv({ ...assignment, engine: 'claude', env: controllerEnv });

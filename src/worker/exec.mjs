@@ -194,6 +194,9 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         if (e.reported) return;
         e.reported = true;
         clearTimeout(e.grace);
+        // An engine's step is over: what it left running in its process group (a dev server it forgot) goes with it,
+        // as on one machine (spawn.mjs E3). ESRCH when nothing is left. A script's children are its own business.
+        if (frame.reap === true && frame.detached !== false && platform !== 'win32' && typeof child.pid === 'number') { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* nothing left */ } }
         flush(e, id);
         live.delete(id);
         send({ type: 'exit', id, code, signal });

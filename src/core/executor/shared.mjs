@@ -21,6 +21,24 @@ export function fullVariantEngines(env = process.env) {
   return v ? v.split(',').map((s) => s.trim()).filter(Boolean) : [...FULL_VARIANT_ENGINES];
 }
 
+/** The error an aborted wait or spawn ends with. */
+export function abortError() {
+  return Object.assign(new Error('aborted'), { name: 'AbortError' });
+}
+/** Resolve after `ms`, or at once when `signal` aborts (it never rejects: the caller re-checks the signal). */
+export function sleep(ms, signal) {
+  return new Promise((resolve) => {
+    const t = setTimeout(done, ms);
+    function done() { clearTimeout(t); signal?.removeEventListener('abort', done); resolve(); }
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+/** A positive number from `env[name]`, else `def`. */
+export function envInt(env, name, def) {
+  const n = Number(env?.[name]);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
 /** A worker that could not be started: the harness's failure policy treats it like a lost network. */
 export function startFailure(message, extra = {}) {
   return Object.assign(new Error(message), { code: 'EWORKERSTART', errorClass: 'network', ...extra });
@@ -57,6 +75,7 @@ export const PROXY_NAMES = Object.freeze(['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROX
  */
 export const WORKER_PASS_THROUGH = Object.freeze([
   'TZ', 'WORCA_BROKER_URL', 'WORCA_MOCK', 'WORCA_CA_CERT_FILE', 'NODE_EXTRA_CA_CERTS', 'WORCA_SIGTERM_GRACE_MS',
+  'WORCA_WORKER_RELAY_PORT',   // the controller tells a chat's MCP child this port: the worker's shim must listen on the same one
   'WORCA_CLAUDE_BIN', 'WORCA_CODEX_BIN', 'WORCA_GEMINI_BIN', 'WORCA_QWEN_BIN', 'WORCA_COPILOT_BIN', 'WORCA_CURSOR_BIN', 'WORCA_GOOSE_BIN', 'WORCA_OPENCODE_BIN',
 ]);
 

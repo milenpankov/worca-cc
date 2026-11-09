@@ -314,7 +314,7 @@ function superviseLocal(o, session = null) {
         if (missing) throw Object.assign(new Error(missing), { code: 'EWORKERNOBIN', errorClass: 'auth' });
       }
       child = session
-        ? createRemoteChild(session, { file: exe, args: argv, cwd, env: childEnv ?? { ...process.env }, stdin, displayBin })
+        ? createRemoteChild(session, { file: exe, args: argv, cwd, env: childEnv ?? { ...process.env }, stdin, displayBin, reap: true })
         : spawn(exe, argv, {
           cwd, stdio: [stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'], ...(childEnv ? { env: childEnv } : {}),
           ...(agentId || ownGroup ? { detached: true } : {}),

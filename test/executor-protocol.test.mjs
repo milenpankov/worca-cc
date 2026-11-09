@@ -76,6 +76,8 @@ test('encode refuses an invalid or oversize frame; decode returns null on garbag
   assert.equal(isValidFrame(out), true);
   assert.equal(isValidFrame({ ...out, more: 'yes' }), false);
   assert.equal(isValidFrame({ ...exec, cwd: '' }), false);
+  assert.equal(isValidFrame({ ...exec, reap: true }), true);
+  assert.equal(isValidFrame({ ...exec, reap: 1 }), false);
   assert.equal(decodeFrame('{not json'), null);
   assert.equal(decodeFrame('{"type":"nope"}'), null);
   assert.equal(decodeFrame(JSON.stringify(huge)), null);

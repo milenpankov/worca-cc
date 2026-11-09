@@ -209,3 +209,24 @@ test('a first connection that cannot be made is tried again; a refused or a drop
     assert.equal(n, 1);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("an engine's step takes what it left running with it; a script's children stay", { skip: process.platform === 'win32' ? 'POSIX process groups' : false, timeout: 30000 }, async () => {
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const runOnce = async (reap) => {
+    const frames = [];
+    const runner = createExecRunner({ send: (f) => frames.push(f), home: tmpdir(), log: () => {} });
+    const done = new Promise((resolve) => runner.onIdle(resolve));
+    // A step that forgets a background process (a dev server) and exits. Its output is detached so the pipes close.
+    runner.start({ type: 'exec', id: 'x', file: '/bin/sh', args: ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], cwd: tmpdir(), env: { PATH: process.env.PATH }, stdin: null, detached: true, ...(reap ? { reap: true } : {}) });
+    await done;
+    const pid = Number(frames.filter((f) => f.type === 'out').flatMap((f) => f.lines)[0]);
+    assert.ok(pid > 0, JSON.stringify(frames));
+    for (let i = 0; i < 50 && reap && alive(pid); i++) await new Promise((r) => setTimeout(r, 20));
+    return pid;
+  };
+  const reaped = await runOnce(true);
+  assert.equal(alive(reaped), false, 'the forgotten process went with the engine step, as on one machine');
+  const kept = await runOnce(false);
+  try { assert.equal(alive(kept), true, "a script node's background process is its own business, as locally"); }
+  finally { try { process.kill(kept, 'SIGKILL'); } catch { /* gone */ } }
+});

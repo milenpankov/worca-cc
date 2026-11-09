@@ -69,7 +69,9 @@ export function isValidExecSpec(f) {
   return id(f.id) && str(f.file, 4096) && Array.isArray(f.args) && f.args.every((a) => typeof a === 'string')
     && (f.cwd === null || str(f.cwd, 4096)) && isStringMap(f.env)   // null: the worker's own cwd, as a local spawn without one
     && (f.stdin === null || typeof f.stdin === 'string')
-    && (f.detached === undefined || typeof f.detached === 'boolean');
+    && (f.detached === undefined || typeof f.detached === 'boolean')
+    // `reap`: when the process ends, whatever it left running in its group is killed too (an engine's step, as locally).
+    && (f.reap === undefined || typeof f.reap === 'boolean');
 }
 
 /** Structural check of any protocol frame (either direction). */

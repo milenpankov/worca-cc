@@ -61,4 +61,6 @@ test('a run under a remote executor: scoped spawns on the run\'s worker, release
   await orch._releaseWorker({ keepHome: false });
   assert.equal(existsSync(homeMade), false);
   assert.match(orch._stopPaused.toString(), /await this\._releaseWorker\(\{ keepHome: false \}\)/, 'the stop of a paused run releases its worker and HOME');
+  // A python script node runs on the worker image: the controller does not refuse the run for lacking an interpreter.
+  assert.match(orch._preflightScriptRuntimes.toString(), /if \(isRemoteExecutor\(\)\) return;/);
 });
