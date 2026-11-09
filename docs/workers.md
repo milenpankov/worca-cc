@@ -125,6 +125,12 @@ What that means per engine:
 | Goose | the provider's key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, …) with the provider and model named as [models.md](models.md#goose) describes | `goose configure` |
 | OpenCode | the provider's key in the environment | `opencode auth login` |
 
+The copied Claude login is a copy: each worker HOME holds its own, and the seed is read-only. If
+the sign-in's tokens rotate when one copy refreshes them, the other copies stop working until the
+next seed (a worker's next start copies a newer login again). For anything long-lived prefer a
+token (`claude setup-token`, as `CLAUDE_CODE_OAUTH_TOKEN`) or the broker, which have no copies to
+fall out of step.
+
 Each engine's section in [models.md](models.md) has the exact variables and the models to pick.
 Seeding other engines' sign-ins the way Claude's is seeded is not implemented. The Compose option
 of a Claude key as a compose secret read through `apiKeyHelper` is for the one-container box; on
@@ -168,6 +174,12 @@ is not implemented.
   the controller for anything that runs on a worker image (Claude Code, which the controller has, stays checked).
   A worker that lacks the engine refuses the spawn with the image setting to fix; a missing interpreter fails the
   script's spawn.
+- **Chat commands** (agent mode, the chat's shell) are off: a chat on a worker reaches its worca tools through
+  the relay, which carries no command tools. The chat is told so, and Settings shows it as unavailable.
+- **What a chat may read.** A chat's read rules also name the controller's login volume as a worker sees it
+  (`/seed`) and every worker HOME, so a chat on a worker cannot open another scope's sessions or a copied login.
+- **The host guard** tells an agent on a worker to leave the worker process alone (its parent), not the
+  server's process id, which means nothing inside the worker.
 - **Leftovers.** When an engine's step ends, what it left running in its process group ends with it, as on one
   machine. A script node's background processes are its own.
 - **Container-local paths.** The controller composes each spawn's environment in its own container. On the

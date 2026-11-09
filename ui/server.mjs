@@ -6509,7 +6509,7 @@ const activeActionSnaps = (runId) => actions.listFor(runId).filter((s) => ['star
 /** Agent mode exists only where a person's terminal does, and never under agent isolation (Ask then runs as an
  *  agent user, and a server-user shell would undo that). terminalEnabledHere(null) skips its agent-caller part
  *  and keeps only the hosted gate; per-request callers (the status route) add their req checks. */
-const askCommandsEnabled = () => !agentIdentity() && terminalEnabledHere();
+const askCommandsEnabled = () => !agentIdentity() && !isRemoteExecutor() && terminalEnabledHere();   // a relayed chat (agent users, worker containers) has no command tools
 function chatAgentModeFor(threadId, bound = !!conversationForThread(threadId)) { return !bound && askCommandsEnabled(); }
 
 const askCommands = createAskCommands({

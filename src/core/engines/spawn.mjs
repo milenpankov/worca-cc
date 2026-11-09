@@ -259,6 +259,11 @@ function carryClass(out, err) {
   return out;
 }
 
+/** The pid the host-guard preamble names: this process's, or null when the spawn goes to a worker container. */
+export function guardPid() {
+  return spawnsRemotely() ? null : process.pid;
+}
+
 export function superviseSpawn(o) {
   // The executor seam (executor/index.mjs): a spawn inside a run or chat scope under a remote
   // executor runs on that scope's worker for its engine; everything else — the default — spawns here.

@@ -193,8 +193,32 @@ test('happy path: the pod is created from the template, resolves on Running, and
   assert.equal(watch.query.resourceVersion, rv0);
 });
 
+test('a failed image pull gets the kubelet\'s retries: one that recovers starts, one that does not fails after the grace', async (t) => {
+  const { fake, backend, logs } = await setup(t, { WORCA_K8S_PULL_GRACE_MS: '200' });
+  const pulling = (reason) => ({ phase: 'Pending', containerStatuses: [{ name: 'worker', image: 'ghcr.io/x/worker:1', state: { waiting: { reason, message: 'toomanyrequests' } } }] });
+  // A cold node gets one 429 from the registry; the kubelet pulls again and the pod runs.
+  const p = backend.start(startArgs());
+  const pod = await fake.nextCreated();
+  await fake.nextWatch();
+  fake.update(pod.metadata.name, pulling('ErrImagePull'));
+  await new Promise((r) => setTimeout(r, 60));
+  fake.update(pod.metadata.name, { phase: 'Running' });
+  assert.equal((await p).name, pod.metadata.name, 'not failed at the first sight of ErrImagePull');
+  assert.ok(logs.some((l) => /ErrImagePull for .*; the kubelet retries, waiting up to 0 s/.test(l)), logs.join('\n'));
+  // An image that is really not there: still failing when the grace is over.
+  const t0 = Date.now();
+  const q = backend.start(startArgs({ workerId: 'w-run-0002' })).then(() => null, (e) => e);
+  const pod2 = await fake.nextCreated();
+  await fake.nextWatch();
+  fake.update(pod2.metadata.name, pulling('ErrImagePull'));
+  fake.update(pod2.metadata.name, pulling('ImagePullBackOff'));
+  const err = await q;
+  assert.match(err.message, /cannot start: ImagePullBackOff for image ghcr\.io\/x\/worker:1 \(toomanyrequests\)/);
+  assert.ok(Date.now() - t0 >= 180, 'after the grace, not before');
+});
+
 test('ImagePullBackOff rejects on the first event, naming the image, and deletes the pod', async (t) => {
-  const { fake, backend } = await setup(t, { WORCA_K8S_WORKER_IMAGES: JSON.stringify({ claude: 'reg.local/worker:missing' }) });
+  const { fake, backend } = await setup(t, { WORCA_K8S_PULL_GRACE_MS: '0', WORCA_K8S_WORKER_IMAGES: JSON.stringify({ claude: 'reg.local/worker:missing' }) });
   const p = backend.start(startArgs());
   const pod = await fake.nextCreated();
   assert.equal(pod.spec.containers[0].image, 'reg.local/worker:missing');

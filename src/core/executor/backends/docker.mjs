@@ -142,9 +142,14 @@ export function workerImageFor(engine, { pattern, controllerImage, fullEngines =
     ref = pattern.replaceAll('{engine}', engine);
   } else {
     if (pattern === 'self' || !controllerImage) return controllerImage || null;
-    const at = controllerImage.lastIndexOf(':');
-    const slash = controllerImage.lastIndexOf('/');
-    const [repo, tag] = at > slash ? [controllerImage.slice(0, at), controllerImage.slice(at + 1)] : [controllerImage, 'latest'];
+    // A digest pin (`repo@sha256:…`, `repo:1.3.0@sha256:…`) names one image, not a family: the tag before it, when
+    // there is one, is what the worker images share; with none, nothing says which worker image goes with it.
+    const pinned = controllerImage.indexOf('@');
+    const base = pinned >= 0 ? controllerImage.slice(0, pinned) : controllerImage;
+    const at = base.lastIndexOf(':');
+    const slash = base.lastIndexOf('/');
+    if (pinned >= 0 && at <= slash) return null;
+    const [repo, tag] = at > slash ? [base.slice(0, at), base.slice(at + 1)] : [base, 'latest'];
     ref = `${repo}-worker:${tag}-${engine}`;
   }
   // A `-full` tag (WORCA_TAG=1.3.0-full) names the variant AFTER the engine, as published: `<tag>-<engine>-full`,
@@ -233,7 +238,7 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
     async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine: asked = null }) {
       const engine = asked || await engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
       const image = workerImageFor(engine, { pattern, controllerImage: template.image, fullEngines });
-      if (!image) throw new Error('no worker image: set WORCA_WORKER_IMAGE');
+      if (!image) throw new Error(`no worker image can be derived from the controller's image (${template.image || 'unknown'}): set WORCA_WORKER_IMAGE, e.g. registry/worca-worker:<tag>-{engine}`);
       const name = `worca-worker-${scope.kind}-${String(scope.id).replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40)}-${workerId.slice(-8)}`;
       const spec = {
         Image: image, Cmd: ['worca', 'worker'], Hostname: name.slice(0, 63),

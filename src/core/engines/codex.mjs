@@ -25,7 +25,7 @@ import { join, resolve, dirname, relative } from 'node:path';
 import { worcaHome } from '../projects.mjs';
 import { hostGuardEnabled, hostGuardSystemPrompt } from '../host-guard.mjs';
 import { CAPABILITY_KEYS, describeUnattachableMcp } from './capabilities.mjs';
-import { superviseSpawn, composeSpawnEnv, cleanRunEnv, safeEmit, writableRootsInWorcaHome } from './spawn.mjs';
+import { superviseSpawn, guardPid, composeSpawnEnv, cleanRunEnv, safeEmit, writableRootsInWorcaHome } from './spawn.mjs';
 import { createRedactor } from '../redact.mjs';
 import { strongestClass } from '../recoverable-error.mjs';
 import { ARGV_INLINE_LIMIT } from './claude.mjs';
@@ -778,7 +778,7 @@ export async function runCodexProcess({
     safeEmit(onEvent, { type: 'stderr', stream: 'err', text: `[worca] codex: stored session ${JSON.stringify(String(resumeSessionId).slice(0, 12))}… is not a codex thread — starting a fresh one` });
   }
   const guardOn = hostGuardEnabled();
-  let sys = guardOn ? [hostGuardSystemPrompt(process.pid), systemPrompt].filter(Boolean).join('\n\n') : systemPrompt;
+  let sys = guardOn ? [hostGuardSystemPrompt(guardPid()), systemPrompt].filter(Boolean).join('\n\n') : systemPrompt;
   let stdin = String(prompt ?? '');
   // No system-prompt file flag: a prompt too large for one argv value is folded
   // into stdin behind a delimiter (the systemPromptFlag fallback).

@@ -560,6 +560,8 @@ What the overlay does:
   the open network; with plain `docker compose -f … -f compose.egress.yml -f compose.workers.yml`
   set `WORCA_UPLINK_NETWORK=internal` in `.env` for the same (the controller warns at boot when
   it is on both). `WORCA_WORKER_NETWORK` names the workers' network outright.
+- **A digest-pinned controller image** (`image: …/worca@sha256:…`) names no tag to derive the worker
+  images from: set `WORCA_WORKER_IMAGE`. With a tag before the digest (`:1.3.0@sha256:…`) the tag is used.
 - **`-full` tags.** With `WORCA_TAG=<version>-full` the workers of the engines that have a full image
   (`claude`, `all`) run `<version>-<engine>-full`; the other engines run their slim image.
 - **More than one installation on a host.** Workers carry their installation (the Compose project,

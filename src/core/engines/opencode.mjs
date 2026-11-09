@@ -66,7 +66,7 @@ import { join, relative } from 'node:path';
 import { worcaHome } from '../projects.mjs';
 import { hostGuardEnabled, hostGuardSystemPrompt } from '../host-guard.mjs';
 import { CAPABILITY_KEYS } from './capabilities.mjs';
-import { superviseSpawn, composeSpawnEnv, cleanRunEnv, safeEmit } from './spawn.mjs';
+import { superviseSpawn, guardPid, composeSpawnEnv, cleanRunEnv, safeEmit } from './spawn.mjs';
 import { createRedactor } from '../redact.mjs';
 import { strongestClass } from '../recoverable-error.mjs';
 import { envFlag } from '../model-env.mjs';
@@ -530,7 +530,7 @@ export async function runOpencodeProcess({
   }
 
   const guardOn = hostGuardEnabled();
-  const sys = guardOn ? [hostGuardSystemPrompt(process.pid), systemPrompt].filter(Boolean).join('\n\n') : String(systemPrompt || '');
+  const sys = guardOn ? [hostGuardSystemPrompt(guardPid()), systemPrompt].filter(Boolean).join('\n\n') : String(systemPrompt || '');
   const fanOut = !ask && Array.isArray(allowedTools) && allowedTools.some((t) => t === 'Agent' || t === 'Task');
   // A chat's agent has a name no user config can know (its permission would merge into one it did know).
   const nodeAgent = ask ? `worca-chat-${rand()}${rand()}` : OPENCODE_NODE_AGENT;

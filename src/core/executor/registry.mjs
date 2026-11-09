@@ -58,6 +58,7 @@ export function createWorkerRegistry({
   const entries = new Map();   // `${scopeKey}|${class}` -> { scope, key, ek, engine, state:'starting'|'ready'|'closing', workerId, token, handle, session, waiters:[], startedAt, idleMs, timer, ctl, abandoned }
   const tokens = new Map();    // token -> { key, ek, workerId, mintedAt, used }
   const scopeEntries = (key) => [...entries.values()].filter((e) => e.key === key);
+  const releases = new Map();   // scopeKey -> how many times it was released: an acquire compares before and after its await
   /** What tells a scope's workers apart: the backend's class for the engine (its image), else the engine name. */
   const classOf = async (engine) => {
     try { const c = await backend.classFor?.(engine); if (c) return String(c); } catch { /* the engine name will do */ }
@@ -251,12 +252,18 @@ export function createWorkerRegistry({
       if (!s) throw new Error('acquire: a run or chat scope is required');
       const key = scopeKey(s);
       const want = (typeof engine === 'string' && engine.trim()) || s.engine || null;
+      const epoch = releases.get(key) || 0;
       let waitingSince = null;
       for (;;) {
         if (signal?.aborted) throw abortError();
         if (closing) throw startFailure('the server is shutting down');
         let entry = want ? null : (scopeEntries(key)[0] || null);
         const ek = entry ? entry.ek : `${key}|${await classOf(want)}`;
+        // Asked again after the await: a stop, a shutdown or the scope's release may have happened meanwhile, and a
+        // worker begun now would belong to nobody (a run's has no idle timeout: it would hold a slot until the next boot).
+        if (signal?.aborted) throw abortError();
+        if (closing) throw startFailure('the server is shutting down');
+        if ((releases.get(key) || 0) !== epoch) throw startFailure(`the worker for ${key} was released while this spawn was starting`);
         entry ||= entries.get(ek) || null;
         if (entry?.state === 'ready') { entry.session.touch(); return entry.session; }
         if (entry?.state === 'starting') return waitFor(entry, signal);
@@ -277,6 +284,7 @@ export function createWorkerRegistry({
     /** End the scope's workers (no-op when there is none). */
     async release(scope, { reason = 'released', graceMs = 5000 } = {}) {
       const key = scopeKey(scope);
+      if (key) { if (releases.size > 5000) releases.clear(); releases.set(key, (releases.get(key) || 0) + 1); }   // an acquire in flight for this scope must not start a worker now
       const mine = key ? scopeEntries(key) : [];
       if (!mine.length) return false;
       await Promise.all(mine.map((entry) => releaseEntry(entry, { reason, graceMs })));

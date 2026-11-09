@@ -405,6 +405,29 @@ test('a relay answer too large to send comes back as an error at once, not as si
   } finally { await reg2.closeAll(); }
 });
 
+test('a scope released, or a registry closed, while an acquire is still working out its worker starts nothing', async () => {
+  let open; const gate = new Promise((r) => { open = r; });
+  const started = [];
+  const b = { async classFor() { await gate; return 'img'; }, start(o) { started.push(o.scopeKey); return new Promise(() => {}); }, async remove() {}, async listWorkers() { return []; }, describe() { return {}; } };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, log: () => {} });
+  await reg2.listen();
+  try {
+    const scope = { kind: 'run', id: 'ending' };
+    const late = reg2.acquire(scope, { engine: 'claude' }).then(() => null, (e) => e);   // a spawn in the same tick as the run's finally
+    await reg2.release(scope, { reason: 'done' });                                        // finds no worker yet, returns
+    open();
+    const err = await late;
+    assert.match(err.message, /the worker for run:ending was released while this spawn was starting/);
+    assert.equal(err.errorClass, 'network');
+    assert.deepEqual(started, [], 'no container was started for a run that is over');
+    // A later segment of the same run (a resume) is a new acquire and is served.
+    const again = reg2.acquire(scope, { engine: 'claude' }).catch(() => {});
+    for (let i = 0; i < 100 && !started.length; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(started, ['run:ending']);
+    await reg2.release(scope, { reason: 'test' }); await again;
+  } finally { await reg2.closeAll(); }
+});
+
 test('a worker that exits before it connects fails the start at once with its reason, not after the whole timeout', async () => {
   let exited = false; const removed = [];
   const b = {

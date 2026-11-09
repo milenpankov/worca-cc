@@ -14,7 +14,7 @@ import { homedir } from 'node:os';
 import { join, relative, resolve, sep, isAbsolute } from 'node:path';
 import { worcaHome } from '../projects.mjs';
 import { hostGuardEnabled, hostGuardSystemPrompt } from '../host-guard.mjs';
-import { superviseSpawn, composeSpawnEnv, cleanRunEnv, safeEmit, writableRootsInWorcaHome } from './spawn.mjs';
+import { superviseSpawn, guardPid, composeSpawnEnv, cleanRunEnv, safeEmit, writableRootsInWorcaHome } from './spawn.mjs';
 import { createRedactor } from '../redact.mjs';
 import { strongestClass } from '../recoverable-error.mjs';
 
@@ -331,7 +331,7 @@ export async function runFamilyProcess(spec, {
   const refNames = ask ? [...new Set([...Object.keys(runEnv || {}), ...(envAllowlist || []).filter((k) => typeof process.env[k] === 'string' && process.env[k] !== '')])] : [];
   const servers = ask ? withEnvRefs(readMcpServers(mcpConfigPath, bin), refNames) : readMcpServers(mcpConfigPath, bin);
   const guardOn = hostGuardEnabled();
-  const sys = guardOn ? [hostGuardSystemPrompt(process.pid), systemPrompt].filter(Boolean).join('\n\n') : String(systemPrompt || '');
+  const sys = guardOn ? [hostGuardSystemPrompt(guardPid()), systemPrompt].filter(Boolean).join('\n\n') : String(systemPrompt || '');
 
   let scratch = null;
   const scratchDir = () => {

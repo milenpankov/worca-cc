@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { useTempHome } from './helpers/temp-home.mjs';
 import { createLoopbackRegistry, createLoopbackSession } from './helpers/loopback-worker-session.mjs';
-import { superviseSpawn, missingOnWorker, engineOfSpawn } from '../src/core/engines/spawn.mjs';
+import { superviseSpawn, missingOnWorker, engineOfSpawn, guardPid } from '../src/core/engines/spawn.mjs';
 import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
 import { installExecutorFromEnv, keepsWorkerHome, reapWorkersAtBoot } from '../src/core/executor/controller.mjs';
 import { releaseWorker, workerHomeDir } from '../src/core/executor/index.mjs';
@@ -77,6 +77,8 @@ test("a spawn names its engine to the registry; a worker that cannot start keeps
   assert.equal(engineOfSpawn({ cli: CODEX_CLI, file: '/opt/anything' }), 'codex', "the adapter's CLI spec names the engine");
   assert.equal(engineOfSpawn({ file: '/usr/local/bin/cursor-agent' }), 'cursor', 'else the binary name does');
   assert.equal(engineOfSpawn({ file: '/bin/sh' }), null, 'a script is no engine');
+  assert.equal(guardPid(), process.pid, 'a local spawn: the host guard names this server');
+  assert.equal(await remote(createLoopbackRegistry(), () => guardPid()), null, 'a spawn on a worker: no pid of this container');
   const sh = script('echo hi');
   const registry = createLoopbackRegistry();
   await remote(registry, () => superviseSpawn(base({ file: sh, args: [], cli: CODEX_CLI })));

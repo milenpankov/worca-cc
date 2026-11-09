@@ -280,7 +280,7 @@ Egress allowlist](docker.md#egress-allowlist)), not a replacement for it.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| A run fails at once: *cannot start a worker … ImagePullBackOff* (or `ErrImagePull`) | The worker image for that engine does not exist for this tag, or needs a pull secret | Check the run's error for the exact image. Published tags are `<version>-<engine>[-full]`; `imagePullSecrets` applies to worker pods too |
+| A run fails after about 90 s: *cannot start a worker … ImagePullBackOff* (or `ErrImagePull`; the kubelet's own retries are waited out first, `WORCA_K8S_PULL_GRACE_MS`) | The worker image for that engine does not exist for this tag, or needs a pull secret | Check the run's error for the exact image. Published tags are `<version>-<engine>[-full]`; `imagePullSecrets` applies to worker pods too |
 | A run fails after `worker.pendingTimeoutSeconds`: *did not connect within …* and the pod was `Pending` | No node fits the worker's requests, `nodeSelector` or `tolerations`; or the shared claim is unbound | `kubectl -n worca describe pod <worker>`; lower `worker.resources`, fix the selector, or check `kubectl get pvc` |
 | The controller exits **78**, `/worca is not writable` | The shared volume's `worca` directory is root-owned (NFS without fsGroup, hostPath) | Make the export writable by uid 1000 (see [Storage](#storage)) or set `storage.shared.prepare.enabled=true` |
 | Probes fail; the pod restarts | The probes were changed to `httpGet` (the kubelet is an unknown peer on most network plugins: 403), or `WORCA_ALLOWED_HOSTS` was set without an identity check (the server then exits) | Keep the chart's `exec` probes; set the Access variables |

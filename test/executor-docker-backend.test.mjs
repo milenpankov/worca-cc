@@ -97,6 +97,11 @@ test('pure helpers: bytes, endpoints, mounts, images, env', () => {
   assert.equal(workerImageFor('gemini', { pattern: null, controllerImage: 'ghcr.io/x/worca:1.3.0-full' }), 'ghcr.io/x/worca-worker:1.3.0-gemini');
   assert.equal(workerImageFor('codex', { pattern: null, controllerImage: 'ghcr.io/x/worca:1.3.0-full', fullEngines: ['codex'] }), 'ghcr.io/x/worca-worker:1.3.0-codex-full', 'WORCA_WORKER_FULL_ENGINES');
   assert.equal(workerImageFor('codex', { pattern: 'my/worker-full:{engine}', controllerImage: 'a:b' }), 'my/worker-full:codex', 'only a tag that ends in -full-<engine> is reordered');
+  // A digest-pinned controller: the tag before the digest is what the worker images share; a digest alone names none.
+  const digest = `sha256:${'c'.repeat(64)}`;
+  assert.equal(workerImageFor('claude', { pattern: null, controllerImage: `ghcr.io/x/worca:1.3.0@${digest}` }), 'ghcr.io/x/worca-worker:1.3.0-claude');
+  assert.equal(workerImageFor('claude', { pattern: null, controllerImage: `registry:5000/x/worca@${digest}` }), null, 'nothing to derive from: WORCA_WORKER_IMAGE must say');
+  assert.equal(workerImageFor('claude', { pattern: 'my/worker:{engine}', controllerImage: `ghcr.io/x/worca@${digest}` }), 'my/worker:claude');
   const e = workerEnvFor({ scopeKey: 'run:r1', workerId: 'w1', token: 't', controllerUrl: 'ws://worca:4319', idleMs: null, engine: 'claude', env: env('/x') });
   assert.equal(e.WORCA_WORKER_SCOPE, 'run:r1');
   assert.equal(e.WORCA_NO_DB, '1');

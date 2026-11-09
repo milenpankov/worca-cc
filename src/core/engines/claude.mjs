@@ -24,7 +24,7 @@ import { redactSecrets, redactDeep, createRedactor } from '../redact.mjs';
 import { MODEL_CREDENTIAL_ENV_KEYS } from '../broker-guard.mjs';
 import { modelSlot } from '../broker-routing.mjs';
 import { pluginModelRoute, syncPluginSlots } from '../plugin-broker-slots.mjs';
-import { superviseSpawn, composeSpawnEnv, cleanRunEnv, safeEmit } from './spawn.mjs';
+import { superviseSpawn, guardPid, composeSpawnEnv, cleanRunEnv, safeEmit } from './spawn.mjs';
 import { CAPABILITY_KEYS } from './capabilities.mjs';
 
 export const DEFAULT_BIN = process.env.WORCA_CLAUDE_BIN || process.env.ORCH_CLAUDE_BIN || 'claude';
@@ -601,7 +601,7 @@ export function runClaudeProcess({ cwd, systemPrompt, prompt, allowedTools, perm
     // Claude Code's own.
     const guardOn = hostGuardEnabled();
     const guardedSystemPrompt = guardOn
-      ? [hostGuardSystemPrompt(process.pid), systemPrompt].filter(Boolean).join('\n\n')
+      ? [hostGuardSystemPrompt(guardPid()), systemPrompt].filter(Boolean).join('\n\n')
       : systemPrompt;
     let plan;
     try {

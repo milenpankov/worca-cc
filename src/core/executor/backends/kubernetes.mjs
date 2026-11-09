@@ -54,6 +54,9 @@ const LOG_TAIL_LINES = 50;
 /** Container waiting reasons that no amount of waiting fixes: the pod is rejected on the first sight of one. */
 export const FATAL_WAITING_REASONS = Object.freeze(['ImagePullBackOff', 'ErrImagePull', 'ErrImageNeverPull', 'InvalidImageName', 'CreateContainerConfigError', 'CreateContainerError']);
 const FATAL_WAITING = new Set(FATAL_WAITING_REASONS);
+/** Of those, the ones the kubelet retries by itself: one registry timeout or 429 on a cold node is not a missing image. */
+const PULL_RETRIED = new Set(['ErrImagePull', 'ImagePullBackOff']);
+export const DEFAULT_PULL_GRACE_MS = 90_000;
 
 const packageVersion = () => { try { return createRequire(import.meta.url)('../../../../package.json').version; } catch { return 'latest'; } };
 const envJson = (env, name) => {
@@ -140,6 +143,8 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
     };
   };
   const pendingTimeoutMs = envInt(env, 'WORCA_K8S_PENDING_TIMEOUT_MS', DEFAULT_PENDING_TIMEOUT_MS);
+  const grace = Number(env.WORCA_K8S_PULL_GRACE_MS);
+  const pullGraceMs = env.WORCA_K8S_PULL_GRACE_MS !== undefined && Number.isFinite(grace) && grace >= 0 ? grace : DEFAULT_PULL_GRACE_MS;
   const activeDeadlineSeconds = envInt(env, 'WORCA_K8S_ACTIVE_DEADLINE_S', DEFAULT_ACTIVE_DEADLINE_S);
   const live = new Map();   // workerId -> handle
 
@@ -197,14 +202,15 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
     let last = null;
     const unschedulable = new Set();
     return new Promise((resolve, reject) => {
-      const finish = (ok, value) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); ctl.abort(); (ok ? resolve : reject)(value); };
+      let pullTimer = null;   // armed at the first failed pull; cleared when the pod moves on
+      const finish = (ok, value) => { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(pullTimer); signal?.removeEventListener('abort', onAbort); ctl.abort(); (ok ? resolve : reject)(value); };
       // The registry gave up on this start (nobody waits for it any more): stop watching; start() deletes the pod.
       const onAbort = () => finish(false, abortError());
       if (signal?.aborted) { settled = true; reject(abortError()); return; }
       signal?.addEventListener('abort', onAbort, { once: true });
       const rejectWithLog = async (headline) => {
         if (settled) return;
-        settled = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); ctl.abort();
+        settled = true; clearTimeout(timer); clearTimeout(pullTimer); signal?.removeEventListener('abort', onAbort); ctl.abort();
         let tail = null;
         try { tail = await client.podLog(namespace, name, { tailLines: LOG_TAIL_LINES, container: 'worker' }); } catch (err) { log(`log of ${name}: ${err.message}`); }
         const trimmed = typeof tail === 'string' ? tail.trim() : '';
@@ -219,10 +225,19 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
         if (type === 'DELETED') return finish(false, startFailure(`worker pod ${name} was deleted before it connected`, { pod: name }));
         const c = classifyPod(pod);
         last = c;
+        const cannotStart = (x) => startFailure(`worker pod ${name} cannot start: ${x.reason} for image ${x.image || image}${x.message ? ` (${x.message})` : ''}`, { pod: name, reason: x.reason });
+        if (c.kind !== 'fatal' && pullTimer) { clearTimeout(pullTimer); pullTimer = null; }   // the pull went through after all
+        if (c.kind === 'fatal' && PULL_RETRIED.has(c.reason) && pullGraceMs > 0) {
+          if (!pullTimer) {
+            log(`pod ${name}: ${c.reason} for ${c.image || image}; the kubelet retries, waiting up to ${Math.round(pullGraceMs / 1000)} s`);
+            pullTimer = setTimeout(() => finish(false, cannotStart(last?.kind === 'fatal' ? last : c)), pullGraceMs);
+          }
+          return;
+        }
         switch (c.kind) {
           case 'running': return finish(true, pod);
           case 'exited': return void rejectWithLog(`worker pod exited before connecting: ${c.reason}${c.message ? ` (${c.message})` : ''}`);
-          case 'fatal': return finish(false, startFailure(`worker pod ${name} cannot start: ${c.reason} for image ${c.image || image}${c.message ? ` (${c.message})` : ''}`, { pod: name, reason: c.reason }));
+          case 'fatal': return finish(false, cannotStart(c));
           case 'unschedulable':
             if (!unschedulable.has(c.message)) { unschedulable.add(c.message); log(`pod ${name} is unschedulable: ${c.message || 'no message'}; waiting up to ${Math.round(pendingTimeoutMs / 1000)} s`); }
             return;

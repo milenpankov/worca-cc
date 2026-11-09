@@ -310,7 +310,7 @@ async function workersEndToEnd(ctrlImage, workerImg) {
   try {
     docker(['run', '-d', '--name', ui, '--network', net, ...(sockGid ? ['--group-add', sockGid] : []),
       '-e', 'WORCA_MOCK=1', '-e', 'WORCA_EXECUTOR=docker', '-e', `WORCA_WORKER_IMAGE=${workerImg}`,
-      '-e', `WORCA_CONTROLLER_URL=ws://${ui}:4319`, '-e', `WORCA_CONTROLLER_CONTAINER=${ui}`,
+      '-e', `WORCA_CONTROLLER_URL=ws://${ui}:4319`,   // no WORCA_CONTROLLER_CONTAINER: the controller finds its own container, as under Compose
       '-e', 'GIT_AUTHOR_NAME=smoke', '-e', 'GIT_AUTHOR_EMAIL=smoke@example.com',
       '-v', `${vol}:/worca`, '-v', '/var/run/docker.sock:/var/run/docker.sock', ctrlImage]);
     let health = null;
