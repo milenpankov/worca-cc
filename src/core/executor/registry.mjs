@@ -166,13 +166,14 @@ export function createWorkerRegistry({
    * container in the background, and the hello on the listener resolves the waiters. A backend failure or a
    * worker that never connects rejects ALL of them. Nothing here depends on one caller's abort signal.
    */
-  function begin(scope, key, ek, engine) {
+  function begin(scope, key, ek, engine, helper = false) {
     const workerId = `w-${scope.kind}-${randomBytes(4).toString('hex')}`;
     const entry = { scope, key, ek, engine, state: 'starting', workerId, token: null, handle: null, session: null, waiters: [], startedAt: Date.now(),
       // A chat's worker leaves when the thread goes quiet. A run's own worker stays for the run; one it started for
-      // another engine (a title on Claude in a Codex run, one step on a second engine) leaves when idle and comes back
-      // on demand: it would otherwise hold a container's memory and CPU reservation until the run ends.
-      idleMs: scope.kind === 'chat' ? chatIdleMs : (engine && scope.engine && engine !== scope.engine ? helperIdleMs : null), timer: null, probeTimer: null, ctl: new AbortController(), abandoned: false };
+      // another engine's IMAGE (a title on Claude in a Codex run, one step on a second engine) leaves when idle and
+      // comes back on demand: it would otherwise hold a container's memory and CPU reservation until the run ends.
+      // With one image for every engine there is one worker, and it is the run's own whichever spawn started it.
+      idleMs: scope.kind === 'chat' ? chatIdleMs : (helper ? helperIdleMs : null), timer: null, probeTimer: null, ctl: new AbortController(), abandoned: false };
     entries.set(ek, entry);
     entry.token = mintToken(key, ek, workerId);
     Promise.resolve()
@@ -277,6 +278,7 @@ export function createWorkerRegistry({
         if (closing) throw startFailure('the server is shutting down');
         let entry = want ? null : (scopeEntries(key)[0] || null);
         const ek = entry ? entry.ek : `${key}|${await classOf(want)}`;
+        const helper = !entry && s.kind === 'run' && !!s.engine && !!want && want !== s.engine && ek !== `${key}|${await classOf(s.engine)}`;
         // Asked again after the await: a stop, a shutdown or the scope's release may have happened meanwhile, and a
         // worker begun now would belong to nobody (a run's has no idle timeout: it would hold a slot until the next boot).
         if (signal?.aborted) throw abortError();
@@ -287,7 +289,7 @@ export function createWorkerRegistry({
         if (entry?.state === 'starting') return waitFor(entry, signal);
         // The cap bounds how many scopes hold workers. A scope that already holds one never waits for its second
         // (a helper job on another engine's image): every such wait holds a slot, and a few of them deadlock.
-        if (entries.size < maxWorkers || scopeEntries(key).length) return waitFor(begin(s, key, ek, want), signal);
+        if (entries.size < maxWorkers || scopeEntries(key).length) return waitFor(begin(s, key, ek, want, helper), signal);
         // Full. A chat worker with nothing running gives way (its thread gets a fresh one on its next turn)…
         const idle = [...entries.values()].filter((e) => e.state === 'ready' && e.idleMs != null && e.session.liveExecCount === 0)
           .sort((a, b) => a.session.lastActiveAt - b.session.lastActiveAt)[0];

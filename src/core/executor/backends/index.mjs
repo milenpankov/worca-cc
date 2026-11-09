@@ -15,13 +15,11 @@ export async function createBackend(kind, { env = process.env, log = () => {}, h
   if (override === 'in-process') return createInProcessBackend({ homeRoot, log, probe: true });
   if (override) throw new Error(`WORCA_EXECUTOR_BACKEND=${override} is not a backend (in-process is the only override)`);
   if (kind === 'docker') {
-    const mod = await import('./docker.mjs').catch(() => null);
-    if (!mod?.createDockerBackend) throw new Error('the docker executor backend is not available in this version');
+    const mod = await import('./docker.mjs').catch((err) => { throw new Error(`the docker executor backend could not be loaded: ${err?.message || err}`, { cause: err }); });
     return mod.createDockerBackend({ env, log, ...(bootId ? { bootId } : {}) });
   }
   if (kind === 'kubernetes') {
-    const mod = await import('./kubernetes.mjs').catch(() => null);
-    if (!mod?.createKubernetesBackend) throw new Error('the kubernetes executor backend is not available in this version');
+    const mod = await import('./kubernetes.mjs').catch((err) => { throw new Error(`the kubernetes executor backend could not be loaded: ${err?.message || err}`, { cause: err }); });
     return mod.createKubernetesBackend({ env, log, ...(bootId ? { bootId } : {}) });
   }
   throw new Error(`no backend for executor kind ${kind}`);

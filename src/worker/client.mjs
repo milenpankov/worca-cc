@@ -20,7 +20,7 @@ const CONNECT_TIMEOUT_MS = 15_000;
  *   capabilities: object, idleMs?: number|null, pingMs?: number, log?: (msg:string) => void,
  *   onRelayResult?: (frame: object) => void }} o
  */
-export function startWorker({ url, token, scope, workerId, home, capabilities, idleMs = null, pingMs = DEFAULT_PING_MS, log = () => {} }) {
+export function startWorker({ url, token, scope, workerId, home, capabilities, idleMs = null, pingMs = DEFAULT_PING_MS, lostGraceMs = 5000, log = () => {} }) {
   const base = String(url).replace(/\/+$/, '');
   const target = base.endsWith(WORKER_WS_PATH) ? base : base + WORKER_WS_PATH;
   let resolveDone;
@@ -57,10 +57,14 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
     endedWith = why;
     clearTimeout(idleTimer); clearInterval(pingTimer);
     for (const [id, r] of relays) { relays.delete(id); r.resolve({ lines: null, error: `worker done: ${why}` }); }
-    runner.killAll();
-    log(`worker ${workerId} done: ${why}`);
     try { ws.terminate(); } catch { /* gone */ }
-    resolveDone(code);
+    // Whatever still runs (the controller went away mid-step) is stopped as a stop would: SIGTERM, a grace, then
+    // SIGKILL. An engine killed inside a write strands temp files in a HOME that is kept for the run's resume.
+    Promise.resolve(runner.liveCount ? runner.shutdown({ graceMs: lostGraceMs }) : null).catch(() => {}).then(() => {
+      runner.killAll();
+      log(`worker ${workerId} done: ${why}`);
+      resolveDone(code);
+    });
   };
 
   const armIdle = () => {

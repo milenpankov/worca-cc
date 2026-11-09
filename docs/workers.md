@@ -46,7 +46,8 @@ gets one worker per image, and they end together.
   the pipeline's outputs and verdicts, staged prompts (`<worcaHome>/tmp/stage`), and the
   worker's HOME (`<worcaHome>/worker-homes/<kind>/<id>`), where the engine keeps the run's
   sessions — so a replacement worker after a pause or a lost container can `--resume` them.
-- **Loss.** When a worker's connection drops it kills its children and exits; the controller
+- **Loss.** When a worker's connection drops it stops its children as a stop would (SIGTERM, a
+  few seconds of grace, then SIGKILL) and exits; the controller
   reports the step as a network failure, which the run's failure policy retries on a fresh worker.
   There is no reconnect.
 - **Boot.** A controller removes every worker a previous controller of the same installation left
@@ -115,9 +116,10 @@ an agent on a worker:
   `BITBUCKET_*`, `AZURE_DEVOPS_*`): agents get no Git credential. A variable the controller
   holds itself and left out of a spawn on purpose is never filled in from the worker's copy: a
   guardrail set that scrubs the environment stays scrubbed when the same Secret feeds both, and
-  with the credential broker on no model credential is added at all. A key that only the worker
-  holds is outside the scrub: one agents must not be able to read belongs in the
-  [credential broker](credential-broker.md).
+  with the credential broker on no model credential is added at all. A scrubbed spawn also tells
+  its worker what the scrub lets through (the engine's own names and the set's allowlist), and the
+  worker adds nothing of its own beyond that, so the guardrail holds for a key only the worker has.
+  A key no agent may ever read still belongs in the [credential broker](credential-broker.md).
 
 What that means per engine:
 
@@ -169,7 +171,10 @@ is not implemented.
 
 - **Chat tools** run on the controller: the turn's MCP child posts each line to the worker's
   loopback relay shim, which forwards it over the worker socket (the same path agent isolation
-  uses on one machine).
+  uses on one machine). A process such a tool starts (a script the chat wrote and tries out, a
+  task classifier on the chat's engine) runs on the chat's worker, not in the controller.
+- **Helper jobs asked for outside a run** (a PR description, a run overview) run on the controller,
+  on Claude Code, whatever engine the run used: the controller image carries no other engine.
 - **Bridged models** (an entry with `upstream`, served by the controller's loopback bridge) are
   refused at run and turn start: the bridge is not reachable from another container yet.
 - **The in-process outbound policy proxy** (`WORCA_EGRESS_MODE`) does not reach workers; use the

@@ -10,8 +10,10 @@ import { useTempHome } from './helpers/temp-home.mjs';
 import { createLoopbackRegistry, createLoopbackSession } from './helpers/loopback-worker-session.mjs';
 import { superviseSpawn, missingOnWorker, tooOldOnWorker, olderThan, engineOfSpawn, guardPid } from '../src/core/engines/spawn.mjs';
 import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
-import { installExecutorFromEnv, keepsWorkerHome, reapWorkersAtBoot, askRelayUrl, WORKER_RELAY_PORT } from '../src/core/executor/controller.mjs';
-import { releaseWorker, workerHomeDir, spawnHomeDir } from '../src/core/executor/index.mjs';
+import { installExecutorFromEnv, keepsWorkerHome, reapWorkersAtBoot, askRelayUrl, WORKER_RELAY_PORT, relayAskLine, bindAskRelays } from '../src/core/executor/controller.mjs';
+import { composeSpawnEnv, scrubKeepList, ENV_KEEP_VAR } from '../src/core/engines/spawn.mjs';
+import { scriptBaseEnv, envForShell } from '../src/core/graph/script-runner.mjs';
+import { releaseWorker, workerHomeDir, spawnHomeDir, helperEngineHere } from '../src/core/executor/index.mjs';
 import { createBackend } from '../src/core/executor/backends/index.mjs';
 import { createWorkerRegistry } from '../src/core/executor/registry.mjs';
 import { homedir } from 'node:os';
@@ -462,4 +464,46 @@ test("a spawn's HOME is its worker's when it runs on one; the in-process backend
     const s = await reg.acquire({ kind: 'run', id: 'r-probe' });
     assert.ok(Object.keys(s.capabilities.engines).includes('claude'), 'every engine worca knows was looked for');
   } finally { await reg.closeAll('test over'); }
+});
+
+test("a chat's relayed tool call runs in the chat's scope; a helper job outside any scope runs on the controller's engine", async () => {
+  // What a chat tool spawns (a script the chat wrote and benches) must go to the chat's worker, not run beside the database.
+  const seen = [];
+  const rpc = { async feed(line) { seen.push([line, currentExecutorScope()]); }, async idle() {} };
+  const relays = new Map([['tok-scoped', { out: [], billTo: null, owner: null, rpc, scope: { kind: 'chat', id: 'th-9', engine: 'codex' } }], ['tok-bare', { out: [], billTo: null, owner: null, rpc }]]);
+  bindAskRelays(relays);
+  try {
+    assert.deepEqual(await relayAskLine('tok-scoped', '{"id":1}'), { lines: [], error: null });
+    assert.deepEqual(await relayAskLine('tok-bare', '{"id":2}'), { lines: [], error: null });
+    assert.deepEqual(seen, [['{"id":1}', { kind: 'chat', id: 'th-9', engine: 'codex' }], ['{"id":2}', null]]);
+    assert.equal((await relayAskLine('nope', 'x')).error, 'relay: unknown or finished turn');
+  } finally { bindAskRelays(new Map()); }
+  // A PR description or an overview is asked for from a route, outside any scope: its spawn stays on the controller,
+  // whose image has Claude Code only.
+  assert.equal(helperEngineHere('codex'), 'codex', 'no worker containers: the run\'s own helper engine');
+  installExecutor({ kind: 'docker', registry: createLoopbackRegistry({ session: createLoopbackSession({ workerId: 'w-h' }) }) });
+  try {
+    assert.equal(helperEngineHere('codex'), 'claude');
+    assert.equal(helperEngineHere('claude'), 'claude');
+    assert.equal(withExecutorScope({ kind: 'run', id: 'r-h', engine: 'codex' }, () => helperEngineHere('codex')), 'codex', 'inside the run it goes to the run\'s worker');
+  } finally { installExecutor(null); }
+});
+
+test('a scrubbed spawn bound for a worker carries what its scrub lets through; a child never inherits the database folder', () => {
+  assert.equal(scrubKeepList(['MY_TOOL_KEY', 'bad,name', ''], ['CURSOR_']), 'CURSOR_*,MY_TOOL_KEY');
+  assert.equal(scrubKeepList(undefined), 'ANTHROPIC_*,CLAUDE_*');
+  const opts = { envScrub: true, envAllowlist: ['MY_TOOL_KEY'], prefixes: ['ANTHROPIC_', 'CLAUDE_'] };
+  assert.equal(ENV_KEEP_VAR in composeSpawnEnv(opts).env, false, 'a local spawn: nothing added');
+  assert.equal(ENV_KEEP_VAR in scriptBaseEnv({ envScrub: true }), false);
+  installExecutor({ kind: 'docker', registry: createLoopbackRegistry({ session: createLoopbackSession({ workerId: 'w-s' }) }) });
+  try {
+    const scope = { kind: 'run', id: 'r-scrub', engine: 'claude' };
+    assert.equal(withExecutorScope(scope, () => composeSpawnEnv(opts).env[ENV_KEEP_VAR]), 'ANTHROPIC_*,CLAUDE_*,MY_TOOL_KEY');
+    assert.equal(withExecutorScope(scope, () => ENV_KEEP_VAR in composeSpawnEnv({ ...opts, envScrub: false }).env), false, 'no scrub: the worker adds its own credentials as documented');
+    assert.equal(withExecutorScope(scope, () => scriptBaseEnv({ envScrub: true, envAllowlist: ['MY_TOOL_KEY'] })[ENV_KEEP_VAR]), 'ANTHROPIC_*,CLAUDE_*,MY_TOOL_KEY');
+    assert.equal(ENV_KEEP_VAR in composeSpawnEnv(opts).env, false, 'outside a scope the spawn stays here');
+  } finally { installExecutor(null); }
+  // The database follows WORCA_DB_DIR before the home: a script that runs worca code must not find the live one.
+  const env = envForShell({ inputs: {}, outputs: {} }, { PATH: '/bin', WORCA_HOME: '/h', WORCA_DB_DIR: '/worca-db' });
+  assert.deepEqual(['WORCA_HOME', 'WORCA_DB_DIR'].map((k) => k in env), [false, false]);
 });

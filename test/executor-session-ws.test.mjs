@@ -4,7 +4,7 @@
 // (backends/in-process.mjs); its children are real.
 import { test, after, afterEach, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
@@ -574,4 +574,31 @@ test('a backend that fails to start a worker makes acquire reject with a network
     assert.equal(err.errorClass, 'network');
     assert.deepEqual(reg2.snapshot(), []);
   } finally { await reg2.closeAll(); }
+});
+
+test('a lost controller ends the children as a stop does: SIGTERM first, so an engine can finish its writes', POSIX, async () => {
+  const marker = join(tmp(), 'got-term');
+  const s = await registry.acquire(RUN);
+  const handle = backend.started.at(-1);
+  const p = inRun(() => superviseSpawn(base({ file: script(`trap 'echo term > "${marker}"; exit 0' TERM; echo up; while :; do sleep 0.05; done`), args: [] }))).then(() => null, (e) => e);
+  await new Promise((r) => setTimeout(r, 250));
+  s.terminate('controller gone');
+  assert.equal((await p).code, 'EWORKERLOST');
+  assert.equal(await handle.done, 1);
+  assert.equal(existsSync(marker), true, 'the child saw SIGTERM and wrote before it went');
+});
+
+test("with one image for every engine the run's only worker is its own, whichever spawn started it", async () => {
+  const b = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  b.classFor = async () => 'reg/worca-worker:1-all';
+  const r = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, helperIdleMs: 100, log: () => {} });
+  await r.listen();
+  try {
+    const scope = { kind: 'run', id: 'one-image', engine: 'codex' };
+    const first = await r.acquire(scope, { engine: 'claude' });   // the run's title on Claude comes first
+    await new Promise((res) => setTimeout(res, 500));
+    assert.equal(b.live.length, 1, 'no helper timeout: the Codex steps that follow share this worker');
+    assert.equal(await r.acquire(scope, { engine: 'codex' }), first);
+    assert.equal(b.started.length, 1);
+  } finally { await r.closeAll(); }
 });

@@ -103,6 +103,15 @@ export function workerHomeDir(scope, home = worcaHome()) {
   return s ? join(home, 'worker-homes', s.kind, s.id) : null;
 }
 
+/**
+ * The engine a helper job (a PR description, a run overview) runs on from where it is called. Outside any scope its
+ * spawn stays on the controller, whose image carries Claude Code only: under a remote executor such a job runs on
+ * Claude, as a Cursor run's helpers always do. Inside a scope, and under the local executor, the engine asked for.
+ */
+export function helperEngineHere(engine) {
+  return installed && !currentExecutorScope() ? 'claude' : engine;
+}
+
 /** The HOME the spawn in this async context runs with: its worker's (on the shared volume, so this process reads what
  *  the engine wrote there), else this process's own. */
 export function spawnHomeDir() {

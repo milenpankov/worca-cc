@@ -14,7 +14,8 @@ import { withBillTo } from '../billing.mjs';
 import { DEFAULT_RELAY_PORT } from '../../worker/relay-shim.mjs';
 
 export { isRemoteExecutor, releaseWorker, touchWorker } from './index.mjs';
-export { withExecutorScope } from './scope.mjs';
+import { withExecutorScope } from './scope.mjs';
+export { withExecutorScope };
 export { bridgedModelRefusal } from './gates.mjs';
 /** The loopback port of a worker's chat relay shim. Set on the CONTROLLER (it writes the URL into the chat's MCP
  *  config) and handed to every worker (shared.mjs WORKER_PASS_THROUGH), so both sides always agree. */
@@ -51,11 +52,13 @@ export async function relayAskLine(token, line) {
   if (typeof line !== 'string') return { lines: null, error: 'relay: line is required' };
   // One line at a time per turn (the child sends sequentially), so the output collected
   // between feed and idle is this line's answer.
-  await withBillTo(entry.billTo, async () => {
+  // In the chat's executor scope: what a tool spawns (a script the chat wrote and benches, a task classifier on the
+  // chat's engine) runs on the chat's worker, not in this container beside the database. No scope: as before.
+  await withExecutorScope(entry.scope ?? null, () => withBillTo(entry.billTo, async () => {
     entry.out = [];
     await entry.rpc.feed(line);
     await entry.rpc.idle();
-  }, { owner: entry.owner });
+  }, { owner: entry.owner }));
   return { lines: entry.out, error: null };
 }
 

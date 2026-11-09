@@ -51,8 +51,13 @@ export function childEnv(env, { home, workerPid = process.pid, user = null, work
   // the controller left out on purpose (`withheld`: its env scrub or the broker removed it; this must not undo that).
   const extra = String(workerEnv?.WORCA_WORKER_PASS_ENV || '').split(',').map((s) => s.trim()).filter(Boolean);
   const kept = new Set(Array.isArray(withheld) ? withheld : []);
+  // A scrubbed spawn names what its scrub lets through (WORCA_ENV_KEEP, spawn.mjs): nothing else of the worker's own
+  // reaches the child, so the guardrail holds for a key that only this container has. The variable itself stops here.
+  const keep = typeof out.WORCA_ENV_KEEP === 'string' ? out.WORCA_ENV_KEEP.split(',').filter(Boolean) : null;
+  delete out.WORCA_ENV_KEEP;
+  const scrubbedOut = (k) => !!keep && !keep.some((n) => (n.endsWith('*') ? k.startsWith(n.slice(0, -1)) : k === n));
   for (const [k, v] of Object.entries(workerEnv || {})) {
-    if (out[k] !== undefined || v === undefined || v === '' || kept.has(k) || !passesFromWorker(k, extra)) continue;
+    if (out[k] !== undefined || v === undefined || v === '' || kept.has(k) || scrubbedOut(k) || !passesFromWorker(k, extra)) continue;
     out[k] = v;
   }
   // This container's own value wins (its entrypoint rebuilt the CA bundle and set the caches); a CA file path that

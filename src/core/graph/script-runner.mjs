@@ -13,6 +13,7 @@ import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mockEnabled, buildSpawnEnv } from '../claude-runner.mjs';
+import { ENV_KEEP_VAR, scrubKeepList } from '../engines/spawn.mjs';
 import { scrubbedEnv } from '../plugin-shim.mjs';            // PATH/HOME, the proxy and CA variables + the Windows start-up baseline (P11); no cycle: plugin-shim imports no graph module
 import { normalizeReview } from '../protocol.mjs';
 import { readVerdict, missingVerdictWarning } from './exec-io.mjs';
@@ -36,7 +37,7 @@ const PY_HARNESS_PATH = fileURLToPath(new URL('./worca_script.py', import.meta.u
 const PY_ENV = Object.freeze({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' });
 const AWAIT_ID = AWAIT_PORT.id;
 /** The three server-side variables a script must not inherit (D11). */
-const STRIPPED_ENV = new Set(['WORCA_HOME', 'WORCA_RUN_ROOT', 'WORCA_HOST_PID']);
+const STRIPPED_ENV = new Set(['WORCA_HOME', 'WORCA_DB_DIR', 'WORCA_RUN_ROOT', 'WORCA_HOST_PID']);
 export const CAPTURE_HEAD = 256 * 1024;
 export const CAPTURE_TAIL = 768 * 1024;
 /** v4 T1 — three bounds on what ONE child can push into the host. MEASURED before they existed: 600 MiB of
@@ -202,7 +203,9 @@ export function scriptBaseEnv(claudeOpts, platform = process.platform) {
   const scrubbed = buildSpawnEnv(claudeOpts?.envScrub, claudeOpts?.envAllowlist);
   // Never a GitHub or Azure DevOps credential, nor a proxy URL with a login, like the agents
   // (src/core/host-credentials.mjs, env-proxy.mjs withoutProxyLogin).
-  return withNoGitPath(withoutProxyLogin(stripHostCredentials(scrubbed ? { ...scrubbedEnv(platform), ...scrubbed } : process.env)), { platform });
+  const env = withNoGitPath(withoutProxyLogin(stripHostCredentials(scrubbed ? { ...scrubbedEnv(platform), ...scrubbed } : process.env)), { platform });
+  // Scrubbed, and bound for a worker: the scrub's rule rides along, so the worker adds none of its own beyond it.
+  return scrubbed && spawnsRemotely() ? { ...env, [ENV_KEEP_VAR]: scrubKeepList(claudeOpts?.envAllowlist) } : env;
 }
 
 export function parseFrame(text) {

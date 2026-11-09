@@ -7719,13 +7719,13 @@ async function askPrCardFacts(row) {
   };
 }
 
-const askRelays = new Map();   // token -> { rpc, out, billTo, owner }
+const askRelays = new Map();   // token -> { rpc, out, billTo, owner, scope }
 bindAskRelays(askRelays);   // a worker's `relay` frame and POST /api/ask/relay answer from it (executor/controller.mjs)
 
 function askAgentRelay({ threadId, reader, web = null, engine = 'claude', model = null, skillRoot = null }) {
   const token = randomBytes(24).toString('base64url');
   const life = new AbortController();
-  const entry = { out: [], billTo: currentBillTo(), owner: currentOwner() };
+  const entry = { out: [], billTo: currentBillTo(), owner: currentOwner(), scope: { kind: 'chat', id: threadId, engine } };
   // The tools run here, so this turn's web access rides a private env copy (never process.env itself);
   // the search key is read from worca's own environment, where it was set.
   // A locked-down turn's set skills (#635): this message's mount, one more read root for this relay (this turn) only.

@@ -155,6 +155,13 @@ export function cleanRunEnv(env) {
  * no run env and no overlay the env is otherwise identical to the scrub result.
  * @returns {{env: Record<string,string>, scrubbed: boolean}}
  */
+/** The variable a scrubbed spawn carries to its worker (never to the child): what the scrub lets through, as a comma
+ *  list of names and `PREFIX*` entries. The worker adds nothing of its own that is not on it (worker/exec.mjs). */
+export const ENV_KEEP_VAR = 'WORCA_ENV_KEEP';
+export function scrubKeepList(envAllowlist, prefixes = ['ANTHROPIC_', 'CLAUDE_']) {
+  return [...prefixes.map((p) => `${p}*`), ...(Array.isArray(envAllowlist) ? envAllowlist : [])].filter((n) => typeof n === 'string' && n && !n.includes(',')).join(',');
+}
+
 export function composeSpawnEnv({ envScrub, envAllowlist, prefixes, runEnv, overlay, hostPid } = {}) {
   const scrubbedEnv = buildSpawnEnv(envScrub, envAllowlist, prefixes);
   let env = scrubbedEnv;
@@ -168,6 +175,8 @@ export function composeSpawnEnv({ envScrub, envAllowlist, prefixes, runEnv, over
   // The per-run test-worker cap (Settings › Runs › Machine load): a test runner that reads it (this repo's
   // tools/test-run.mjs) leaves cores for the run's other work and for other runs. A value already set wins.
   if (!env.WORCA_TEST_CONCURRENCY) env = { ...env, WORCA_TEST_CONCURRENCY: String(testWorkerCap()) };
+  // Scrubbed, and bound for a worker that holds credentials of its own: the scrub's rule rides along so it holds there too.
+  if (scrubbedEnv && spawnsRemotely()) env = { ...env, [ENV_KEEP_VAR]: scrubKeepList(envAllowlist, prefixes) };
   return { env, scrubbed: !!scrubbedEnv };
 }
 

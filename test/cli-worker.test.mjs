@@ -318,3 +318,14 @@ test('output keeps the order it arrived in across stdout and stderr', { timeout:
   assert.deepEqual(out.flatMap((f) => f.lines.map((l) => `${f.stream}:${l}`)), ['out:A', 'err:B', 'out:C', 'err:D', 'out:E'], 'an error line stays next to the output it belongs to');
   assert.deepEqual(out.map((f) => f.seq), out.map((_, i) => i), 'frames are numbered in the order they were sent');
 });
+
+test("a scrubbed spawn gets nothing of the worker's own beyond what its scrub lets through", () => {
+  const workerEnv = { OPENAI_API_KEY: 'sk-worker', ANTHROPIC_API_KEY: 'sk-ant-worker', AWS_SECRET_ACCESS_KEY: 'aws', MY_TOOL_KEY: 'tool', WORCA_WORKER_PASS_ENV: 'MY_TOOL_KEY,OTHER_NAME', OTHER_NAME: 'x' };
+  const scrubbed = childEnv({ PATH: '/bin', WORCA_ENV_KEEP: 'ANTHROPIC_*,CLAUDE_*,MY_TOOL_KEY' }, { home: '/h', workerEnv, exists: () => true });
+  assert.equal(scrubbed.ANTHROPIC_API_KEY, 'sk-ant-worker', "the engine's own names pass the scrub");
+  assert.equal(scrubbed.MY_TOOL_KEY, 'tool', 'so does an allowlisted name the worker passes on');
+  assert.deepEqual(['OPENAI_API_KEY', 'AWS_SECRET_ACCESS_KEY', 'OTHER_NAME', 'WORCA_ENV_KEEP'].map((k) => k in scrubbed), [false, false, false, false], 'the guardrail holds for keys only the worker has; the marker stops here');
+  const open = childEnv({ PATH: '/bin' }, { home: '/h', workerEnv, exists: () => true });
+  assert.deepEqual([open.OPENAI_API_KEY, open.AWS_SECRET_ACCESS_KEY, open.OTHER_NAME], ['sk-worker', 'aws', 'x'], 'no scrub: as before');
+  assert.equal(childEnv({ PATH: '/bin', WORCA_ENV_KEEP: '' }, { home: '/h', workerEnv, exists: () => true }).OPENAI_API_KEY, undefined, 'a scrub that lets nothing through');
+});
