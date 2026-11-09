@@ -4,7 +4,7 @@
 // about where agents run, reap the previous controller's workers at boot, close them at shutdown.
 // Also re-exports what the server wires with, so the server imports one module.
 import { randomUUID } from 'node:crypto';
-import { executorKind, executorConfigError, installExecutor, sweepWorkerHomes } from './index.mjs';
+import { executorKind, executorConfigError, installExecutor, sweepWorkerHomes, sweepStaged } from './index.mjs';
 import { createWorkerRegistry } from './registry.mjs';
 import { createBackend } from './backends/index.mjs';
 import { worcaHome } from '../projects.mjs';
@@ -87,7 +87,8 @@ export function workersHealth() {
 
 /**
  * Boot maintenance: with one controller, every worker still around at boot belonged to the previous
- * one; their HOMEs stay only for runs a resume will continue (`keepRun(id)` says which). Returns
+ * one; their HOMEs stay only for runs a resume will continue (`keepRun(id)` says which), and staged
+ * spawn folders older than this process are nobody's. Returns
  * `{ workers: <reap summary> }` to merge into the boot summary, or `{}` under the local executor.
  * @param {{ keepRun: (id:string) => boolean, log?: Function, error?: Function }} o
  */
@@ -99,6 +100,10 @@ export async function reapWorkersAtBoot({ keepRun, log = (l) => console.log(l), 
     const removed = sweepWorkerHomes({ keep: ({ kind, id }) => kind === 'chat' || keepRun(id) });
     if (removed.length) log(`[worca-ui] removed ${removed.length} worker home(s) of finished runs`);
   } catch (err) { error(`[worca-ui] worker-home sweep failed: ${err && err.message ? err.message : err}`); }
+  try {
+    const staged = sweepStaged();
+    if (staged) log(`[worca-ui] removed ${staged} staged spawn folder(s) a previous controller left`);
+  } catch (err) { error(`[worca-ui] staged-file sweep failed: ${err && err.message ? err.message : err}`); }
   return out;
 }
 

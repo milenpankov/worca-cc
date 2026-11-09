@@ -9,6 +9,7 @@
 // tests never spawn a runtime.
 
 import { spawnSync } from 'node:child_process';
+import { CONTROLLER_LABEL } from '../core/executor/shared.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -25,7 +26,7 @@ import { resolveUpstream, upstreamLabel } from '../core/upstream-proxy.mjs';
 export const COMPOSE_SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docker');
 export const OVERLAYS = Object.freeze(['egress', 'ssh', 'teams', 'clonein', 'workers']);
 /** The label every worker container the controller starts carries (src/core/executor/backends/docker.mjs). */
-export const WORKER_CONTAINER_LABEL = 'worca.controller';
+export const WORKER_CONTAINER_LABEL = CONTROLLER_LABEL;   // the label the docker backend puts on every worker (executor/shared.mjs)
 const STATE_FILE = '.worca-container.json';
 /** The proxy variables compose.yml interpolates into the box (case-sensitive: compose reads these names only). */
 const PROXY_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY'];

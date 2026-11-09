@@ -37,6 +37,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { createK8sApi, K8sApiError } from './k8s-api.mjs';
+import { startFailure, passThroughEnv, defaultWorkerEngine } from '../shared.mjs';
 import {
   renderPodSpec, resolveImage, normalizeVariant, podName, workerSelector, workerContainer, assertAllowedEnv,
   DEFAULT_IMAGE_PATTERN, ANNOTATION_SCOPE, LABEL_ENGINE,
@@ -53,8 +54,6 @@ const LOG_TAIL_LINES = 50;
 /** Container waiting reasons that no amount of waiting fixes: the pod is rejected on the first sight of one. */
 export const FATAL_WAITING_REASONS = Object.freeze(['ImagePullBackOff', 'ErrImagePull', 'ErrImageNeverPull', 'InvalidImageName', 'CreateContainerConfigError', 'CreateContainerError']);
 const FATAL_WAITING = new Set(FATAL_WAITING_REASONS);
-const PASS_THROUGH = ['WORCA_BROKER_URL', 'WORCA_CA_CERT_FILE', 'NODE_EXTRA_CA_CERTS', 'TZ', 'WORCA_MOCK'];
-const PROXY_NAMES = ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy'];
 
 const packageVersion = () => { try { return createRequire(import.meta.url)('../../../../package.json').version; } catch { return 'latest'; } };
 const envInt = (env, name, def) => { const n = Number(env[name]); return Number.isFinite(n) && n > 0 ? n : def; };
@@ -64,13 +63,6 @@ const envJson = (env, name) => {
   try { return JSON.parse(raw); } catch (err) { throw new Error(`${name} is not valid JSON: ${err.message}`); }
 };
 
-/** A start failure the registry (and the harness's failure policy) treats like a lost network. */
-function startFailure(message, extra = {}) {
-  return Object.assign(new Error(message), { code: 'EWORKERSTART', errorClass: 'network', ...extra });
-}
-
-const hostOf = (url) => { try { return new URL(String(url)).hostname.replace(/^\[|\]$/g, ''); } catch { return null; } };
-const isLoopback = (url) => { const h = hostOf(url); return !h || h === 'localhost' || h === '::1' || /^127\./.test(h); };
 
 /**
  * The worker container's environment (pure). `controllerEnv` is the controller's own environment,
@@ -86,22 +78,9 @@ export function workerEnvFor({ controllerUrl, token, scopeKey, workerId, idleMs 
     WORCA_WORKER_ID: workerId,
     WORCA_HOME: WORKER_HOME,
     WORCA_PROJECTS_ROOT: WORKER_PROJECTS_ROOT,
+    ...passThroughEnv(controllerEnv, { controllerUrl }),   // the same inherited set as under Docker (shared.mjs)
   };
   if (Number.isFinite(Number(idleMs)) && Number(idleMs) > 0) out.WORCA_WORKER_IDLE_MS = String(Math.floor(Number(idleMs)));
-  const set = (name) => { const v = controllerEnv[name]; if (v !== undefined && v !== null && String(v).trim() !== '') out[name] = String(v); };
-  for (const name of PASS_THROUGH) set(name);
-  for (const name of Object.keys(controllerEnv)) if (/^GIT_(AUTHOR|COMMITTER)_[A-Z_]+$/.test(name)) set(name);
-  let proxied = false;
-  for (const name of PROXY_NAMES) {
-    const v = controllerEnv[name];
-    if (v && String(v).trim() && !isLoopback(v)) { out[name] = String(v); proxied = true; }
-  }
-  const noProxy = controllerEnv.NO_PROXY ?? controllerEnv.no_proxy;
-  if (proxied || (noProxy !== undefined && String(noProxy).trim() !== '')) {
-    const entries = String(noProxy || '').split(',').map((s) => s.trim()).filter(Boolean);
-    for (const h of [hostOf(controllerUrl), hostOf(controllerEnv.WORCA_BROKER_URL)]) if (h && !entries.includes(h)) entries.push(h);
-    out.NO_PROXY = entries.join(',');
-  }
   for (const [k, v] of Object.entries(extra)) if (v !== undefined && v !== null) out[k] = String(v);
   return out;
 }
@@ -171,15 +150,7 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
     return template;
   }
 
-  async function engineFor() {
-    const explicit = String(env.WORCA_K8S_DEFAULT_ENGINE || '').trim();
-    if (explicit) return explicit;
-    try {
-      const { resolveRunEngine } = await import('../../settings-cascade.mjs');
-      const engine = resolveRunEngine({}).engine;
-      return typeof engine === 'string' && engine.trim() ? engine.trim() : 'claude';
-    } catch { return 'claude'; }
-  }
+  const engineFor = () => defaultWorkerEngine(env, ['WORCA_K8S_DEFAULT_ENGINE', 'WORCA_WORKER_ENGINE']);
 
   const handleOf = (pod, { workerId = null, engine = null, scopeKey = null } = {}) => {
     const c = (pod?.spec?.containers || []).find((x) => x?.name === 'worker') || pod?.spec?.containers?.[0];

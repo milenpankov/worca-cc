@@ -65,6 +65,12 @@ test('encode refuses an invalid or oversize frame; decode returns null on garbag
   assert.throws(() => encodeFrame({ type: 'nope' }), /invalid nope frame/);
   const huge = { ...exec, stdin: 'x'.repeat(MAX_FRAME_BYTES) };
   assert.throws(() => encodeFrame(huge), /MAX_FRAME_BYTES/);
+  // Coded, so the sender tells a malformed request and an oversize one from a socket that is gone.
+  assert.throws(() => encodeFrame({ ...exec, file: '' }), { code: 'EPROTO', message: 'invalid exec frame' });
+  assert.throws(() => encodeFrame(huge), { code: 'E2BIG' });
+  // A spawn without a cwd is valid, as it is locally: null means the worker's own.
+  assert.equal(isValidFrame({ ...exec, cwd: null }), true);
+  assert.equal(isValidFrame({ ...exec, cwd: '' }), false);
   assert.equal(decodeFrame('{not json'), null);
   assert.equal(decodeFrame('{"type":"nope"}'), null);
   assert.equal(decodeFrame(JSON.stringify(huge)), null);

@@ -192,6 +192,12 @@ test('engines: engines.env pins every engine but claude, install.sh has an arm p
       assert.match(wf, /IMAGE_WORKER: ghcr\.io\/sinishadjukic\/worca-worker/);
       assert.match(wf, /target: \$\{\{ matrix\.target \}\}/);
       assert.match(wf, /continue-on-error: \$\{\{ matrix\.fragile \}\}/, 'goose and cursor rows do not hold the release');
+      // …but a row that built for one architecture only must not publish a tag the other cannot pull.
+      const archs = (/const archs = \[([^\]]*)\]/.exec(wf)?.[1].match(/arch: '/g) || []).length;
+      assert.equal(archs, 2);
+      assert.equal(Number(/ARCH_COUNT: (\d+)/.exec(wf)?.[1]), archs, 'the manifest step expects as many digests as the plan has architectures');
+      assert.match(wf, /if \[ "\$have" -ne "\$ARCH_COUNT" \]; then\n\s+echo "::error::[^\n]*not publishing a partial manifest"\n\s+exit 1/);
+      assert.ok(wf.indexOf('not publishing a partial manifest') < wf.indexOf('docker buildx imagetools create'), 'checked before anything is pushed');
       assert.match(wf, /engines:\n\s+description: comma list of worker engines/, 'the engines input');
       assert.match(wf, /--worker-image "\$IMAGE_WORKER:\$\{\{ needs\.build\.outputs\.version \}\}-claude"/);
       const ci = read('.github/workflows/ci.yml');

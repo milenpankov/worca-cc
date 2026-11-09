@@ -57,9 +57,9 @@ export function createRemoteChild(session, { file, args, cwd, env, stdin = null,
       if (ended) return;
       (stream === 'out' ? child.stdout : child.stderr).write(lines.join('\n') + '\n');
     },
-    onSpawnError: ({ code, message }) => {
+    onSpawnError: ({ code, message, errorClass = null }) => {
       endStreams();
-      const err = Object.assign(new Error(message), code ? { code } : {});
+      const err = Object.assign(new Error(message), code ? { code } : {}, errorClass ? { errorClass } : {});
       drainThen(() => child.emit('error', err));
     },
     onExit: ({ code, signal }) => {

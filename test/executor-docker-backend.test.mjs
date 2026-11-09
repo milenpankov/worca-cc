@@ -141,8 +141,8 @@ test('the backend replicates the controller container and runs a worker on the s
     // The engine a start names (the run's, the chat's) picks the image; the install default only when none is named.
     const h2 = await b.start({ scope: { kind: 'run', id: 'r-2' }, scopeKey: 'run:r-2', workerId: 'w-run-ffff0002', token: 'tok2', controllerUrl: 'ws://worca:4319', idleMs: null, engine: 'codex' });
     assert.equal(h2.image, 'ghcr.io/sinishadjukic/worca-worker:1.20.0-codex');
-    assert.equal(b.classFor('codex'), h2.image, 'the class the registry tells workers apart by is the image');
-    assert.equal(b.classFor(null), 'ghcr.io/sinishadjukic/worca-worker:1.20.0-claude');
+    assert.equal(await b.classFor('codex'), h2.image, 'the class the registry tells workers apart by is the image');
+    assert.equal(await b.classFor(null), 'ghcr.io/sinishadjukic/worca-worker:1.20.0-claude');
     await b.remove(h2, { reason: 'done' });
   } finally { await d.close(); }
 });

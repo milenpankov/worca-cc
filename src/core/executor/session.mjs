@@ -106,10 +106,13 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
       execs.set(id, handlers);
       lastActiveAt = Date.now();
       try {
-        send({ type: 'exec', id, file: spec.file, args: spec.args, cwd: spec.cwd, env: spec.env, stdin: spec.stdin ?? null, detached: spec.detached !== false });
+        send({ type: 'exec', id, file: spec.file, args: spec.args, cwd: spec.cwd ?? null, env: spec.env, stdin: spec.stdin ?? null, detached: spec.detached !== false });
       } catch (err) {
         execs.delete(id);
-        queueMicrotask(() => handlers.onSpawnError({ code: closed ? 'EWORKERLOST' : 'E2BIG', message: err.message }));
+        // A frame the protocol refuses carries its own code (EPROTO malformed, E2BIG too large); anything else is the
+        // socket: the worker is gone, which the failure policy retries on a fresh one like any lost worker.
+        const lost = closed || !err?.code;
+        queueMicrotask(() => handlers.onSpawnError({ code: lost ? 'EWORKERLOST' : err.code, message: err.message, ...(lost ? { errorClass: 'network' } : {}) }));
       }
       return id;
     },

@@ -64,7 +64,7 @@ export function isValidCapabilities(c) {
  *  (a remote exec never inherits the controller's environment). */
 export function isValidExecSpec(f) {
   return id(f.id) && str(f.file, 4096) && Array.isArray(f.args) && f.args.every((a) => typeof a === 'string')
-    && str(f.cwd, 4096) && isStringMap(f.env)
+    && (f.cwd === null || str(f.cwd, 4096)) && isStringMap(f.env)   // null: the worker's own cwd, as a local spawn without one
     && (f.stdin === null || typeof f.stdin === 'string')
     && (f.detached === undefined || typeof f.detached === 'boolean');
 }
@@ -119,9 +119,10 @@ export function isValidFrame(frame) {
 
 /** One serialized frame. Throws on an invalid or oversize frame: a bug on the sending side. */
 export function encodeFrame(frame) {
-  if (!isValidFrame(frame)) throw new Error(`invalid ${frame?.type ?? 'frame'} frame`);
+  // Coded, so a sender can tell "this request is malformed" (EPROTO) and "too large" (E2BIG) from a socket that is gone.
+  if (!isValidFrame(frame)) throw Object.assign(new Error(`invalid ${frame?.type ?? 'frame'} frame`), { code: 'EPROTO' });
   const text = JSON.stringify(frame);
-  if (Buffer.byteLength(text, 'utf8') > MAX_FRAME_BYTES) throw new Error(`frame exceeds MAX_FRAME_BYTES (${MAX_FRAME_BYTES})`);
+  if (Buffer.byteLength(text, 'utf8') > MAX_FRAME_BYTES) throw Object.assign(new Error(`frame exceeds MAX_FRAME_BYTES (${MAX_FRAME_BYTES})`), { code: 'E2BIG' });
   return text;
 }
 

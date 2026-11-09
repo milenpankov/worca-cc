@@ -12,7 +12,11 @@ import { superviseSpawn, missingOnWorker, engineOfSpawn } from '../src/core/engi
 import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
 import { installExecutorFromEnv } from '../src/core/executor/controller.mjs';
 import { spawnScript } from '../src/core/graph/script-runner.mjs';
-import { installExecutor, isRemoteExecutor, stagingBase, executorKind, executorConfigError, spawnsRemotely } from '../src/core/executor/index.mjs';
+import { installExecutor, isRemoteExecutor, stagingBase, executorKind, executorConfigError, spawnsRemotely, sweepStaged } from '../src/core/executor/index.mjs';
+import { hostOfUrl, isLoopbackUrl, passThroughEnv, defaultWorkerEngine, startFailure, WORKER_PASS_THROUGH } from '../src/core/executor/shared.mjs';
+import { workerEnvFor as dockerWorkerEnv } from '../src/core/executor/backends/docker.mjs';
+import { workerEnvFor as k8sWorkerEnv } from '../src/core/executor/backends/kubernetes.mjs';
+import { mkdirSync, utimesSync, readdirSync } from 'node:fs';
 import { withExecutorScope, currentExecutorScope, scopeKey, parseScopeKey } from '../src/core/executor/scope.mjs';
 import { worcaHome } from '../src/core/projects.mjs';
 
@@ -108,6 +112,52 @@ test('a container executor without WORCA_CONTROLLER_URL refuses to install: work
   } finally {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
+});
+
+test('what a worker container inherits is one rule for every backend', async () => {
+  assert.equal(hostOfUrl('http://proxy.corp:3128'), 'proxy.corp');
+  assert.equal(hostOfUrl('proxy.corp:3128'), 'proxy.corp', 'a proxy written without a scheme is still read');
+  assert.equal(hostOfUrl('http://[::1]:3128'), '::1');
+  assert.equal(hostOfUrl(''), null);
+  for (const v of ['http://127.0.0.1:3128', 'localhost:3128', 'http://[::1]:8080', 'http://0.0.0.0:1']) assert.equal(isLoopbackUrl(v), true, v);
+  for (const v of ['http://egress:3128', 'proxy.corp:3128', '', undefined]) assert.equal(isLoopbackUrl(v), false, String(v));
+  const controllerEnv = {
+    TZ: 'Europe/Sofia', WORCA_BROKER_URL: 'http://broker:8080', WORCA_MOCK: '1', WORCA_CA_CERT_FILE: '/etc/worca/ca.pem', WORCA_SIGTERM_GRACE_MS: '9000', WORCA_CODEX_BIN: '/opt/codex',
+    GIT_AUTHOR_NAME: 'W', GIT_COMMITTER_EMAIL: 'w@x', HTTPS_PROXY: 'proxy.corp:3128', HTTP_PROXY: 'http://127.0.0.1:3128', ALL_PROXY: '::::', NO_PROXY: 'localhost',
+    SSL_CERT_FILE: '/tmp/worca-ca.AAAA/bundle.pem', GH_TOKEN: 'ghp', ANTHROPIC_API_KEY: 'sk', WORCA_BROKER_SECRET: 's', PATH: '/bin',
+  };
+  const inherited = passThroughEnv(controllerEnv, { controllerUrl: 'ws://worca:4319' });
+  assert.deepEqual(inherited, {
+    TZ: 'Europe/Sofia', WORCA_BROKER_URL: 'http://broker:8080', WORCA_MOCK: '1', WORCA_CA_CERT_FILE: '/etc/worca/ca.pem', WORCA_SIGTERM_GRACE_MS: '9000', WORCA_CODEX_BIN: '/opt/codex',
+    GIT_AUTHOR_NAME: 'W', GIT_COMMITTER_EMAIL: 'w@x',
+    HTTPS_PROXY: 'proxy.corp:3128',                      // reachable from another container: kept, scheme or not
+    NO_PROXY: 'localhost,worca,broker',                  // the controller and the broker are never reached through the proxy
+  }, "no credential, no loopback or unreadable proxy, and not the controller's own derived CA bundle path");
+  assert.ok(!WORKER_PASS_THROUGH.some((n) => /TOKEN|SECRET|API_KEY/.test(n)));
+  // Docker and Kubernetes hand a worker the same inherited set; each adds only its assignment and its paths.
+  const assignment = { scopeKey: 'run:r1', workerId: 'w1', token: 't', controllerUrl: 'ws://worca:4319', idleMs: null };
+  const d = dockerWorkerEnv({ ...assignment, engine: 'claude', env: controllerEnv });
+  const k = k8sWorkerEnv({ ...assignment, controllerEnv });
+  for (const [name, value] of Object.entries(inherited)) { assert.equal(d[name], value, `docker ${name}`); assert.equal(k[name], value, `kubernetes ${name}`); }
+  for (const e of [d, k]) for (const name of ['GH_TOKEN', 'ANTHROPIC_API_KEY', 'WORCA_BROKER_SECRET', 'HTTP_PROXY', 'ALL_PROXY', 'SSL_CERT_FILE']) assert.equal(e[name], undefined, name);
+  assert.equal(await defaultWorkerEngine({ WORCA_WORKER_ENGINE: ' codex ' }), 'codex');
+  assert.equal(await defaultWorkerEngine({ WORCA_K8S_DEFAULT_ENGINE: 'gemini', WORCA_WORKER_ENGINE: 'codex' }, ['WORCA_K8S_DEFAULT_ENGINE', 'WORCA_WORKER_ENGINE']), 'gemini');
+  assert.deepEqual([startFailure('x').code, startFailure('x').errorClass], ['EWORKERSTART', 'network']);
+});
+
+test('staged spawn folders older than this process are swept at boot; the ones a live spawn made are kept', () => {
+  const stage = join(worcaHome(), 'tmp', 'stage');
+  const old = join(stage, 'worca-claude-old1');
+  const live = join(stage, 'worca-claude-live');
+  mkdirSync(old, { recursive: true }); mkdirSync(live, { recursive: true });
+  writeFileSync(join(old, 'prompt.txt'), 'left by a controller that crashed');
+  const past = new Date(Date.now() - 3600_000);
+  utimesSync(old, past, past);
+  assert.equal(sweepStaged({ before: Date.now() - 60_000 }), 1);
+  assert.deepEqual(readdirSync(stage), ['worca-claude-live']);
+  assert.equal(sweepStaged({ before: Date.now() - 60_000 }), 0);
+  assert.equal(sweepStaged({ home: join(worcaHome(), 'nowhere') }), 0, 'no staging folder at all: nothing to do');
+  rmSync(stage, { recursive: true, force: true });   // other tests here assert that nothing is staged under this home
 });
 
 test('scope helpers: normalization, keys, and the async context', async () => {

@@ -9,12 +9,10 @@
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { resolveRunEngine } from '../../settings-cascade.mjs';
+import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, passThroughEnv, defaultWorkerEngine } from '../shared.mjs';
 
 export const DOCKER_API = 'v1.43';
-export const CONTROLLER_LABEL = 'worca.controller';
-export const SCOPE_LABEL = 'worca.scope';
-export const WORKER_LABEL = 'worca.worker';
+export { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL };
 const SEED_CLAUDE_DIR = '/seed/claude';
 const START_WAIT_MS = 10_000;
 
@@ -129,25 +127,17 @@ export function workerImageFor(engine, { pattern, controllerImage }) {
   return `${repo}-worker:${tag}-${engine}`;
 }
 
-const PASS_THROUGH = ['TZ', 'NO_PROXY', 'no_proxy', 'HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'WORCA_CA_CERT_FILE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE',
-  'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'WORCA_BROKER_URL', 'WORCA_MOCK', 'WORCA_HOME', 'WORCA_PROJECTS_ROOT', 'WORCA_DATA_DIR', 'WORCA_SIGTERM_GRACE_MS', 'WORCA_CLAUDE_BIN', 'WORCA_CODEX_BIN', 'WORCA_GEMINI_BIN', 'WORCA_QWEN_BIN', 'WORCA_COPILOT_BIN', 'WORCA_CURSOR_BIN', 'WORCA_GOOSE_BIN', 'WORCA_OPENCODE_BIN'];
-const isLoopback = (v) => { try { const h = new URL(v).hostname; return h === 'localhost' || h === '::1' || /^127\./.test(h); } catch { return false; } };
-
-/** The worker container's env: its assignment, plus the controller's connectivity and identity settings (never a credential). */
+/** The worker container's env: its assignment, plus what every backend lets a worker inherit (shared.mjs
+ *  passThroughEnv: connectivity and identity, never a credential). The controller's own home and projects paths
+ *  are the worker's too, since its mounts are replicated at the same destinations. */
 export function workerEnvFor({ scopeKey, workerId, token, controllerUrl, idleMs, engine, env = process.env, seedClaude = true }) {
-  const out = {
+  return {
     WORCA_CONTROLLER_URL: controllerUrl, WORCA_WORKER_TOKEN: token, WORCA_WORKER_SCOPE: scopeKey, WORCA_WORKER_ID: workerId,
     WORCA_WORKER_ENGINE: engine, WORCA_CONTAINER: '1', WORCA_NO_DB: '1',
     ...(idleMs ? { WORCA_WORKER_IDLE_MS: String(idleMs) } : {}),
     ...(seedClaude ? { WORCA_WORKER_SEED_CLAUDE: SEED_CLAUDE_DIR } : {}),
+    ...passThroughEnv(env, { controllerUrl, also: ['WORCA_HOME', 'WORCA_PROJECTS_ROOT', 'WORCA_DATA_DIR'] }),
   };
-  for (const k of PASS_THROUGH) {
-    const v = env[k];
-    if (v === undefined || v === '') continue;
-    if (/proxy$/i.test(k) && isLoopback(v)) continue;   // the controller's in-process proxy is unreachable from another container
-    out[k] = v;
-  }
-  return out;
 }
 
 export async function createDockerBackend({ env = process.env, log = () => {}, api = null, controllerId = null, bootId = `ctl-${process.pid}-${Date.now().toString(36)}` } = {}) {
@@ -170,19 +160,15 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   const live = new Map();   // workerId -> handle
   log(`docker ${version?.Version || '?'} via ${describeEndpoint(env)}; controller ${self.Name || selfId} on network ${template.network}, ${template.mounts.length} mount(s) replicated, user ${template.user || '(image default)'}`);
 
-  const engineFor = () => {
-    const e = String(env.WORCA_WORKER_ENGINE || '').trim();
-    if (e) return e;
-    try { return resolveRunEngine({}).engine || 'claude'; } catch { return 'claude'; }
-  };
+  const engineFor = () => defaultWorkerEngine(env);
 
   return {
     kind: 'docker',
     template,
     /** What tells this scope's workers apart: the image an engine runs on (one image for every engine = one worker). */
-    classFor(engine) { return workerImageFor(engine || engineFor(), { pattern, controllerImage: template.image }) || 'none'; },
+    async classFor(engine) { return workerImageFor(engine || await engineFor(), { pattern, controllerImage: template.image }) || 'none'; },
     async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine: asked = null }) {
-      const engine = asked || engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
+      const engine = asked || await engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
       const image = workerImageFor(engine, { pattern, controllerImage: template.image });
       if (!image) throw new Error('no worker image: set WORCA_WORKER_IMAGE');
       const name = `worca-worker-${scope.kind}-${String(scope.id).replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40)}-${workerId.slice(-8)}`;

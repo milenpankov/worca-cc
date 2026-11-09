@@ -288,6 +288,19 @@ test('a stop while the worker is still starting ends the wait at once; the start
   } finally { await reg2.closeAll(); }
 });
 
+test('an exec that cannot be sent says why: a malformed request is EPROTO, a worker that is gone is a lost worker', async () => {
+  const s = await registry.acquire(RUN);
+  const outcome = (spec) => new Promise((resolve) => s.exec(spec, { onStarted() {}, onLines() {}, onExit() {}, onLost() {}, onSpawnError: resolve }));
+  const bad = await outcome({ file: '', args: [], cwd: tmpdir(), env: {}, stdin: null });
+  assert.deepEqual([bad.code, bad.errorClass], ['EPROTO', undefined], 'not E2BIG: nothing about this request is too large');
+  assert.match(bad.message, /invalid exec frame/);
+  const big = await outcome({ file: '/bin/sh', args: [], cwd: tmpdir(), env: {}, stdin: 'x'.repeat(8 * 1024 * 1024 + 1) });
+  assert.equal(big.code, 'E2BIG');
+  await registry.release(RUN, { reason: 'test' });
+  const gone = await outcome({ file: '/bin/sh', args: ['-c', 'true'], cwd: tmpdir(), env: {}, stdin: null });
+  assert.deepEqual([gone.code, gone.errorClass], ['EWORKERLOST', 'network'], 'retried on a fresh worker by the failure policy');
+});
+
 test('reapAtBoot removes every worker the backend still lists', async () => {
   const removed = [];
   const b = { async start() { throw new Error('unused'); }, async remove(h, o) { removed.push([h.workerId, o.reason]); }, async listWorkers() { return [{ workerId: 'old-1' }, { workerId: 'old-2' }]; }, describe() { return {}; } };

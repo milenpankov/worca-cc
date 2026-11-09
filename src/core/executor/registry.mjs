@@ -23,6 +23,7 @@ import { WebSocketServer } from 'ws';
 import { decodeFrame, encodeFrame, PROTOCOL_VERSION } from './protocol.mjs';
 import { createWorkerSession } from './session.mjs';
 import { normalizeScope, scopeKey } from './scope.mjs';
+import { startFailure } from './shared.mjs';
 
 export const DEFAULT_WORKER_PORT = 4319;
 export const WORKER_WS_PATH = '/worker';
@@ -32,10 +33,6 @@ const WAIT_POLL_MS = 2_000;
 
 const envInt = (name, def) => { const n = Number(process.env[name]); return Number.isFinite(n) && n > 0 ? n : def; };
 
-/** A refusal the acquire path throws: the harness's failure policy treats it like a lost network. */
-function startFailure(message) {
-  return Object.assign(new Error(message), { code: 'EWORKERSTART', errorClass: 'network' });
-}
 
 const sleep = (ms, signal) => new Promise((resolve) => {
   const t = setTimeout(done, ms);

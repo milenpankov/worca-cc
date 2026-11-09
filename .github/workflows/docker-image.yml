@@ -252,7 +252,16 @@ jobs:
         working-directory: /tmp/digests/${{ matrix.key }}
         env:
           REPO: ${{ steps.tags.outputs.repo }}
+          # linux/amd64 + linux/arm64: the `archs` list of the plan job. A row whose build may fail
+          # (continue-on-error) can arrive here with one digest; a tag that exists for one
+          # architecture only fails every pull on the other, so nothing is published then.
+          ARCH_COUNT: 2
         run: |
+          have=$(ls | wc -l)
+          if [ "$have" -ne "$ARCH_COUNT" ]; then
+            echo "::error::${{ matrix.key }}: $have of $ARCH_COUNT architectures built; not publishing a partial manifest"
+            exit 1
+          fi
           args=""
           for t in ${{ steps.tags.outputs.tags }}; do args="$args -t $REPO:$t"; done
           docker buildx imagetools create $args $(printf "$REPO@sha256:%s " *)

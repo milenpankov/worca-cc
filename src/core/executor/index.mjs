@@ -11,7 +11,7 @@
 // unchanged. See docs/workers.md.
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readdirSync, rmSync } from 'node:fs';
+import { readdirSync, rmSync, statSync } from 'node:fs';
 import { worcaHome } from '../projects.mjs';
 import { currentExecutorScope, normalizeScope } from './scope.mjs';
 
@@ -77,6 +77,23 @@ export function spawnsRemotely() {
  */
 export function stagingBase() {
   return installed ? join(worcaHome(), 'tmp', 'stage') : tmpdir();
+}
+
+/**
+ * Staged per-spawn folders (stagingBase) that a crashed controller left on the shared volume: each spawn removes
+ * its own, so anything older than this process is nobody's. Removes them; returns how many. Under the local
+ * executor staging is the OS temp folder and there is nothing of ours to sweep.
+ */
+export function sweepStaged({ before = Date.now() - Math.round(process.uptime() * 1000), home = worcaHome() } = {}) {
+  const dir = join(home, 'tmp', 'stage');
+  let names = [];
+  try { names = readdirSync(dir); } catch { return 0; }
+  let removed = 0;
+  for (const name of names) {
+    const p = join(dir, name);
+    try { if (statSync(p).mtimeMs < before) { rmSync(p, { recursive: true, force: true }); removed += 1; } } catch { /* next boot */ }
+  }
+  return removed;
 }
 
 /** The HOME a scope's worker runs its children with: on the shared volume, so a replacement worker

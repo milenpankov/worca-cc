@@ -50,7 +50,8 @@ gets one worker per image, and they end together.
   reports the step as a network failure, which the run's failure policy retries on a fresh worker.
   There is no reconnect.
 - **Boot.** A controller removes every worker a previous controller left (their tokens died with
-  it) and the worker homes of runs that are not paused.
+  it), the worker homes of runs that are not paused, and staged spawn folders older than itself
+  (each spawn removes its own; what a crashed controller left is nobody's).
 
 ## Configuration
 
@@ -61,6 +62,7 @@ gets one worker per image, and they end together.
 | `WORCA_WORKER_PORT` | controller | the worker listener (default 4319); never publish it to people |
 | `WORCA_CONTROLLER_URL` | controller | the URL workers are told to connect to (`ws://<service>:4319`). **Required** with `docker` and `kubernetes` (the Compose overlay and the chart set it): a worker in another container cannot dial the controller's loopback, and the server refuses to start without it |
 | `WORCA_WORKER_MAX` | controller | containers at once (default 20); runs are also bounded by Settings › Runs |
+| `WORCA_WORKER_ENGINE` | controller | the engine a worker gets when a spawn names none and the scope has none (default: the `run.engine` setting) |
 | `WORCA_WORKER_CHAT_IDLE_MS` | controller | a chat worker leaves after this long with nothing to run (default 15 min) |
 | `WORCA_WORKER_START_TIMEOUT_MS` | controller | how long a worker may take to connect (default 2 min) |
 | `WORCA_DB_DIR` | controller | the database's own directory, off the shared volume (SQLite's WAL needs a local filesystem) |
@@ -68,6 +70,13 @@ gets one worker per image, and they end together.
 | `WORCA_WORKER_HOME`, `WORCA_WORKER_IDLE_MS`, `WORCA_WORKER_RELAY_PORT` | worker | optional |
 
 `/api/health` carries an `executor` object under a remote executor.
+
+A worker **container** inherits the same few controller settings under both backends: `TZ`, `WORCA_BROKER_URL`,
+`WORCA_MOCK`, the corporate CA (`WORCA_CA_CERT_FILE`, `NODE_EXTRA_CA_CERTS`; the worker's entrypoint builds its
+own bundle from it), `WORCA_SIGTERM_GRACE_MS`, the `WORCA_<ENGINE>_BIN` overrides, the git identity, and a proxy
+another container can reach, with the controller's and the broker's hosts added to `NO_PROXY`. A loopback proxy
+is not passed on, and no credential ever is: those reach an agent per spawn
+([Credentials on workers](#credentials-on-workers)).
 
 ## Credentials on workers
 

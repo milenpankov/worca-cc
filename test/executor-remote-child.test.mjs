@@ -69,6 +69,14 @@ test('a spawn error on the worker becomes an error event carrying the code', asy
   const [err] = await once(child, 'error');
   assert.equal(err.code, 'ENOENT');
   assert.match(err.message, /ENOENT/);
+  assert.equal(err.errorClass, undefined, 'a spawn error on the worker has no recovery class of its own');
+  // A request that never left because the worker was already gone is a lost worker: network class, like onLost.
+  const s2 = fakeSession();
+  const child2 = createRemoteChild(s2, spec);
+  lines(child2.stdout); lines(child2.stderr);
+  s2.handlers.onSpawnError({ code: 'EWORKERLOST', message: 'worker w1 is gone (closed)', errorClass: 'network' });
+  const [err2] = await once(child2, 'error');
+  assert.deepEqual([err2.code, err2.errorClass], ['EWORKERLOST', 'network']);
 });
 
 test('a lost worker becomes a network-class error naming the worker, then a close with SIGKILL', async () => {

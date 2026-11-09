@@ -9,18 +9,13 @@ import { createInterface } from 'node:readline';
 import { userInfo } from 'node:os';
 import { existsSync } from 'node:fs';
 import { OUT_WINDOW, OUT_BATCH_LINES, OUT_FLUSH_MS } from '../core/executor/protocol.mjs';
+import { isLoopbackUrl, PROXY_NAMES } from '../core/executor/shared.mjs';
 
 /** Env vars a worker never hands to a child: its own credentials, and a proxy that points at the
  *  controller's loopback (the in-process proxy is unreachable from another container). */
 const WORKER_ONLY_ENV = ['WORCA_WORKER_TOKEN', 'WORCA_WORKER_TOKEN_FILE', 'WORCA_CONTROLLER_URL', 'WORCA_WORKER_SCOPE'];
-const PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy'];
-
-export function isLoopbackUrl(value) {
-  try {
-    const h = new URL(String(value)).hostname.replace(/^\[|\]$/g, '');
-    return h === 'localhost' || h === '::1' || /^127\./.test(h) || h === '0.0.0.0';
-  } catch { return false; }
-}
+const PROXY_VARS = PROXY_NAMES;
+export { isLoopbackUrl };
 
 /**
  * The env a child gets: the controller's composed env, with this worker's HOME (the scope's
@@ -86,7 +81,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
       let child;
       try {
         child = spawn(frame.file, frame.args, {
-          cwd: frame.cwd,
+          cwd: frame.cwd || undefined,   // none named: this worker's own (as a local spawn without cwd)
           env: childEnv(frame.env, { home, user }),
           stdio: [frame.stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
           detached: frame.detached !== false && platform !== 'win32',
