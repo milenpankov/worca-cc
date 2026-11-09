@@ -20,13 +20,14 @@
 import http from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
-import { decodeFrame, encodeFrame, PROTOCOL_VERSION } from './protocol.mjs';
+import { decodeFrame, encodeFrame, PROTOCOL_VERSION, WORKER_WS_PATH, WS_MAX_PAYLOAD } from './protocol.mjs';
+
+export { WORKER_WS_PATH };
 import { createWorkerSession } from './session.mjs';
 import { normalizeScope, scopeKey } from './scope.mjs';
 import { startFailure } from './shared.mjs';
 
 export const DEFAULT_WORKER_PORT = 4319;
-export const WORKER_WS_PATH = '/worker';
 const HELLO_TIMEOUT_MS = 10_000;
 const SWEEP_MS = 30_000;
 const WAIT_POLL_MS = 2_000;
@@ -98,6 +99,9 @@ export function createWorkerRegistry({
   const urlForWorkers = () => controllerUrl || `ws://${host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host}:${boundPort}`;
 
   function admit(ws, req) {
+    // From the first moment: a WebSocket-level error (a malformed or oversize frame before the hello, or after a
+    // refusal) is an 'error' event, and one with no listener is an uncaught exception in the controller.
+    ws.on('error', () => { try { ws.terminate(); } catch { /* gone */ } });
     const token = tokenOf(req);
     const t = token ? usableToken(token) : null;
     if (!t) { ws.close(4001, 'unknown token'); return; }
@@ -215,7 +219,7 @@ export function createWorkerRegistry({
     async listen() {
       server = http.createServer((_req, res) => { res.statusCode = 404; res.end(); });
       wss = new WebSocketServer({
-        server, path: WORKER_WS_PATH, maxPayload: 8 * 1024 * 1024 + 1024,
+        server, path: WORKER_WS_PATH, maxPayload: WS_MAX_PAYLOAD,
         verifyClient: (info, done) => { const token = tokenOf(info.req); done(!!(token && usableToken(token)), 401); },
       });
       wss.on('error', () => {});

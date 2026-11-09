@@ -152,6 +152,7 @@ export function createK8sApi({ env = process.env, log = () => {}, pollMs = 2000,
     async watchPod(ns, name, { resourceVersion, signal, onEvent } = {}) {
       let rv = resourceVersion;
       let failures = 0;
+      let errorEvents = 0;   // ERROR events in a row with nothing delivered between them
       const deliver = (type, obj) => { if (obj?.metadata?.resourceVersion) rv = obj.metadata.resourceVersion; if (!signal?.aborted) onEvent(type, obj); };
       while (!signal?.aborted) {
         if (failures >= WATCH_FAILURES_BEFORE_POLL) {
@@ -185,11 +186,14 @@ export function createK8sApi({ env = process.env, log = () => {}, pollMs = 2000,
             let ev;
             try { ev = JSON.parse(line); } catch { continue; }
             if (ev.type === 'ERROR') {
-              // 410 Gone: our resourceVersion is too old; start over from the current state.
-              if (ev.object?.code === 410) rv = undefined; else log(`watch ${ns}/${name}: ${ev.object?.message || 'error event'}`);
+              // 410 Gone: our resourceVersion is too old; start over from the current state. Any other error status
+              // (a 500, "too many requests") would be answered the same way again at once: back off, more each time.
+              if (ev.object?.code === 410) rv = undefined;
+              else { errorEvents += 1; log(`watch ${ns}/${name}: ${ev.object?.message || 'error event'} (${errorEvents})`); await sleep(Math.min(retryMs * errorEvents, 5000), signal); }
               break;
             }
             if (ev.type === 'BOOKMARK') { if (ev.object?.metadata?.resourceVersion) rv = ev.object.metadata.resourceVersion; continue; }
+            errorEvents = 0;
             deliver(ev.type, ev.object);
           }
         } catch (err) {

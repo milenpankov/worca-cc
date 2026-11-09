@@ -24,6 +24,18 @@ export { isLoopbackUrl };
  */
 /** Variables whose value is a path INSIDE a container: the controller composed the env in its own container, where
  *  its entrypoint built a CA bundle under its /tmp and (on a worker) this one's entrypoint set shared cache dirs. */
+/**
+ * Which of the worker's own variables an engine child may get: model-provider credentials and their settings, by
+ * name, plus whatever WORCA_WORKER_PASS_ENV lists. Never worca's own (`WORCA_*`: the token, the controller URL) and
+ * never a Git host token: pushes and pull requests are the controller's, and agents get no Git credential.
+ */
+const FROM_WORKER = [/_API_KEY$/, /_AUTH_TOKEN$/, /^ANTHROPIC_/, /^CLAUDE_CODE_/, /^OPENAI_/, /^GEMINI_/, /^GOOGLE_/, /^VERTEX/, /^AWS_/, /^AZURE_/, /^COPILOT_/, /^CURSOR_/, /^GOOSE_/, /^DASHSCOPE_/, /^OPENROUTER_/];
+const NEVER_FROM_WORKER = [/^WORCA_/, /^(GH|GITHUB)_TOKEN$/, /^GH_ENTERPRISE_TOKEN$/];
+export function passesFromWorker(name, extra = []) {
+  if (NEVER_FROM_WORKER.some((re) => re.test(name))) return false;
+  return extra.includes(name) || FROM_WORKER.some((re) => re.test(name));
+}
+
 const CA_FILE_VARS = ['SSL_CERT_FILE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'];
 const WORKER_LOCAL_ENV = [...CA_FILE_VARS, 'npm_config_cache', 'UV_CACHE_DIR', 'PLAYWRIGHT_BROWSERS_PATH'];
 
@@ -31,6 +43,14 @@ export function childEnv(env, { home, workerPid = process.pid, user = null, work
   const out = { ...env };
   for (const k of WORKER_ONLY_ENV) delete out[k];
   for (const k of PROXY_VARS) if (out[k] && isLoopbackUrl(out[k])) delete out[k];
+  // The worker's OWN engine credentials (worker.credentialsSecret on Kubernetes puts them in this container, not in
+  // the controller) reach the child when the controller sent none of that name. Only names that look like one: the
+  // worker's container baseline (PATH, service links, its assignment) is not the child's business.
+  const extra = String(workerEnv?.WORCA_WORKER_PASS_ENV || '').split(',').map((s) => s.trim()).filter(Boolean);
+  for (const [k, v] of Object.entries(workerEnv || {})) {
+    if (out[k] !== undefined || v === undefined || v === '' || !passesFromWorker(k, extra)) continue;
+    out[k] = v;
+  }
   // This container's own value wins (its entrypoint rebuilt the CA bundle and set the caches); a CA file path that
   // exists nowhere here — the controller's /tmp/worca-ca.*/bundle.pem — is dropped rather than break every TLS call.
   const usable = (k, v) => !!v && (!CA_FILE_VARS.includes(k) || exists(v));
@@ -47,8 +67,9 @@ export function childEnv(env, { home, workerPid = process.pid, user = null, work
 // Output bounds. One frame holds at most MAX_FRAME_BYTES of JSON, and a frame that does not fit throws in the
 // sender — from a stream or timer callback that would take the whole worker down, and the retry with it. So:
 // small lines are batched up to BATCH_CHARS; a long line travels alone, whole when it fits a frame (a multi-megabyte
-// JSON event of an engine does) and cut into pieces of SPLIT_CHARS when it cannot; a stream with no newline at all
-// is cut at MAX_PARTIAL_CHARS so the buffer never holds more.
+// JSON event of an engine does) and in pieces of SPLIT_CHARS when it cannot; a stream with no newline at all is cut
+// at MAX_PARTIAL_CHARS so the buffer never holds more. Every piece but a line's last is marked `more`, and the
+// controller joins them without a newline: the line arrives as the one line it was.
 const BATCH_CHARS = 512 * 1024;
 const BIG_LINE_CHARS = 256 * 1024;
 const SPLIT_CHARS = 1024 * 1024;              // worst case 6 bytes of JSON per character: still one frame
@@ -57,28 +78,31 @@ const FRAME_BUDGET = MAX_FRAME_BYTES - 64 * 1024;
 const fitsAFrame = (line) => Buffer.byteLength(JSON.stringify(line), 'utf8') <= FRAME_BUDGET;
 
 /**
- * Lines out of a byte stream, as readline gives them (`\n` or `\r\n`, the last line with or without one), but with a
- * bounded buffer: a run of `maxPartial` characters without a newline is handed over as a line of its own.
+ * Lines out of a byte stream, as readline gives them (`\n`, `\r\n` or a lone `\r` end a line; the last line with or
+ * without one), but with a bounded buffer: a run of `maxPartial` characters without a line end is handed over as
+ * `onLine(piece, true)` — "more of this line follows" — so the receiver can put the line back together.
  */
 export function lineSplitter(onLine, { maxPartial = MAX_PARTIAL_CHARS } = {}) {
   const decoder = new StringDecoder('utf8');
   let partial = '';
-  const emit = (line) => onLine(line.endsWith('\r') ? line.slice(0, -1) : line);
+  let heldCR = false;   // the chunk ended on `\r`: the line is over, but a `\n` opening the next chunk belongs to it
   const feed = (text) => {
     let start = 0;
-    for (;;) {
-      const nl = text.indexOf('\n', start);
-      if (nl < 0) break;
-      emit(partial + text.slice(start, nl));
+    if (heldCR) { heldCR = false; if (text.charCodeAt(0) === 10) start = 1; }
+    for (let i = start; i < text.length; i += 1) {
+      const c = text.charCodeAt(i);
+      if (c !== 10 && c !== 13) continue;
+      onLine(partial + text.slice(start, i), false);
       partial = '';
-      start = nl + 1;
+      if (c === 13) { if (i + 1 === text.length) heldCR = true; else if (text.charCodeAt(i + 1) === 10) i += 1; }
+      start = i + 1;
     }
     partial += text.slice(start);
-    while (partial.length > maxPartial) { onLine(partial.slice(0, maxPartial)); partial = partial.slice(maxPartial); }
+    while (partial.length > maxPartial) { onLine(partial.slice(0, maxPartial), true); partial = partial.slice(maxPartial); }
   };
   return {
     write(chunk) { feed(typeof chunk === 'string' ? chunk : decoder.write(chunk)); },
-    end() { const rest = partial + decoder.end(); partial = ''; if (rest) emit(rest); },
+    end() { const rest = partial + decoder.end(); partial = ''; heldCR = false; if (rest) onLine(rest, false); },
   };
 }
 
@@ -102,6 +126,9 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
       try { send({ ...frame, lines: [`[worca worker: ${frame.lines.length} line(s) of output dropped — too large for one frame]`] }); } catch { /* the socket is gone: its close reports it */ }
     }
   };
+  const pauseIfBehind = (e) => {
+    if (!e.paused && e.seq - e.lastAck > OUT_WINDOW) { e.paused = true; try { e.child.stdout.pause(); e.child.stderr.pause(); } catch { /* ended */ } }
+  };
   const flush = (e, id) => {
     clearTimeout(e.flushTimer); e.flushTimer = null;
     for (const stream of ['out', 'err']) {
@@ -111,13 +138,15 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
       sendOut({ type: 'out', id, seq: e.seq++, stream, lines });
     }
     e.pendingChars = 0;
-    if (!e.paused && e.seq - e.lastAck > OUT_WINDOW) { e.paused = true; try { e.child.stdout.pause(); e.child.stderr.pause(); } catch { /* ended */ } }
+    pauseIfBehind(e);
   };
-  const queueLine = (e, id, stream, line) => {
-    if (line.length > BIG_LINE_CHARS) {
+  /** `more`: this is not the end of the line (the splitter cut a newline-free stream); the rest follows. */
+  const queueLine = (e, id, stream, line, more = false) => {
+    if (more || line.length > BIG_LINE_CHARS) {
       flush(e, id);   // what was pending goes first: order within the stream is kept
       const pieces = fitsAFrame(line) ? [line] : Array.from({ length: Math.ceil(line.length / SPLIT_CHARS) }, (_, i) => line.slice(i * SPLIT_CHARS, (i + 1) * SPLIT_CHARS));
-      for (const piece of pieces) { e.pending[stream].push(piece); flush(e, id); }
+      pieces.forEach((piece, i) => sendOut({ type: 'out', id, seq: e.seq++, stream, lines: [piece], ...(more || i < pieces.length - 1 ? { more: true } : {}) }));
+      pauseIfBehind(e);
       return;
     }
     if (e.pendingChars + line.length > BATCH_CHARS) flush(e, id);
@@ -157,7 +186,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         if (!live.size) for (const fn of idleFns) fn();
       });
       for (const [stream, input] of [['out', child.stdout], ['err', child.stderr]]) {
-        const lines = lineSplitter((line) => queueLine(e, id, stream, line));
+        const lines = lineSplitter((line, more) => queueLine(e, id, stream, line, more));
         input.on('data', (chunk) => lines.write(chunk));
         input.on('end', () => lines.end());
       }

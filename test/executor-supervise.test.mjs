@@ -12,7 +12,8 @@ import { superviseSpawn, missingOnWorker, engineOfSpawn } from '../src/core/engi
 import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
 import { installExecutorFromEnv, keepsWorkerHome } from '../src/core/executor/controller.mjs';
 import { scriptSpawnError } from '../src/core/graph/script-runner.mjs';
-import { overlayEnv } from '../src/cli/container.mjs';
+import { overlayEnv, workerInstanceOf } from '../src/cli/container.mjs';
+import { FULL_VARIANT_ENGINES, fullVariantEngines } from '../src/core/executor/shared.mjs';
 import { spawnScript } from '../src/core/graph/script-runner.mjs';
 import { installExecutor, isRemoteExecutor, stagingBase, executorKind, executorConfigError, spawnsRemotely, sweepStaged } from '../src/core/executor/index.mjs';
 import { hostOfUrl, isLoopbackUrl, passThroughEnv, defaultWorkerEngine, startFailure, WORKER_PASS_THROUGH } from '../src/core/executor/shared.mjs';
@@ -166,6 +167,16 @@ test("a script's failed spawn keeps a worker's reason: an abort stays an abort, 
   assert.deepEqual([lost.errorClass, lost.code], ['network', 'EWORKERSTART'], 'retried like an agent step');
   const local = scriptSpawnError('lint', Object.assign(new Error('spawn sh ENOENT'), { code: 'ENOENT' }));
   assert.deepEqual([local.errorClass, local.code], [null, 'ENOENT'], 'a local spawn failure is still not recoverable');
+});
+
+test('`container down` names the installation the way the backend labelled its workers', () => {
+  const dot = (vars) => (name) => vars[name] || null;
+  assert.equal(workerInstanceOf({ dotEnv: dot({}), env: {} }), 'worca', "compose.yml's project name");
+  assert.equal(workerInstanceOf({ dotEnv: dot({ COMPOSE_PROJECT_NAME: 'b' }), env: {} }), 'b', 'a project named in .env: Compose reads it there, so the backend labels with it');
+  assert.equal(workerInstanceOf({ dotEnv: dot({ COMPOSE_PROJECT_NAME: 'b' }), env: { COMPOSE_PROJECT_NAME: 'shell' } }), 'shell', 'the process environment wins over .env, as in Compose');
+  assert.equal(workerInstanceOf({ dotEnv: dot({ WORCA_INSTANCE_ID: 'team-a', COMPOSE_PROJECT_NAME: 'b' }), env: {} }), 'team-a', 'an explicit instance id wins (the overlay hands it to the controller)');
+  assert.deepEqual(fullVariantEngines({}), [...FULL_VARIANT_ENGINES]);
+  assert.deepEqual(fullVariantEngines({ WORCA_WORKER_FULL_ENGINES: 'claude, codex' }), ['claude', 'codex']);
 });
 
 test('egress and workers together put the controller on the internal network, not the open one', () => {

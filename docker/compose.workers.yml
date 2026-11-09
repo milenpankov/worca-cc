@@ -22,6 +22,9 @@ services:
       WORCA_WORKER_MEM: ${WORCA_WORKER_MEM:-4g}
       WORCA_WORKER_CPUS: ${WORCA_WORKER_CPUS:-2}
       WORCA_WORKER_MAX: ${WORCA_WORKER_MAX:-20}
+      # Optional (.env): which controller network workers join, and this installation's name on a shared Docker host.
+      WORCA_WORKER_NETWORK: ${WORCA_WORKER_NETWORK:-}
+      WORCA_INSTANCE_ID: ${WORCA_INSTANCE_ID:-}
       NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost},docker-proxy,worca,broker,egress
     networks:
       # The network the controller shares with its workers. With the egress overlay it must be

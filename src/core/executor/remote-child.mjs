@@ -53,9 +53,10 @@ export function createRemoteChild(session, { file, args, cwd, env, stdin = null,
 
   const id = session.exec({ file, args, cwd, env, stdin, detached }, {
     onStarted: ({ pid }) => { child.pid = pid; child.emit('spawn'); },
-    onLines: ({ stream, lines }) => {
+    onLines: ({ stream, lines, more = false }) => {
       if (ended) return;
-      (stream === 'out' ? child.stdout : child.stderr).write(lines.join('\n') + '\n');
+      // `more`: the last line continues in the next frame, so no newline ends it here (it arrives as one line).
+      (stream === 'out' ? child.stdout : child.stderr).write(lines.join('\n') + (more ? '' : '\n'));
     },
     onSpawnError: ({ code, message, errorClass = null }) => {
       endStreams();

@@ -188,6 +188,7 @@ test('default render: the worker pod template, the controller StatefulSet and th
   assert.deepEqual(pvc.spec.accessModes, ['ReadWriteMany']);
   const ui = byKind(all, 'Service', RELEASE);
   const workers = byKind(all, 'Service', `${RELEASE}-workers`);
+  assert.equal(workers.spec.publishNotReadyAddresses, true, 'a worker reaches the controller while it is not Ready (it resumes runs as it boots)');
   assert.equal(ui.spec.ports[0].port, 4317);
   assert.equal(workers.spec.ports[0].port, 4319);
   assert.equal(workers.spec.type, 'ClusterIP');

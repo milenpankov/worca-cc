@@ -4,6 +4,7 @@
 // proxy enforces its allowlist on a real socket. The image itself is proven by
 // tools/docker-smoke.mjs.
 import { test } from 'node:test';
+import { FULL_VARIANT_ENGINES } from '../src/core/executor/shared.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
@@ -197,6 +198,13 @@ test('engines: engines.env pins every engine but claude, install.sh has an arm p
       assert.match(workers, /networks:\n(\s+#[^\n]*\n)+\s+- \$\{WORCA_UPLINK_NETWORK:-default\}\n\s+- docker-proxy/);
       assert.doesNotMatch(workers, /^\s+- default$/m);
       assert.match(workers, /docker-proxy:\n\s+internal: true\n\s+labels:\n\s+worca\.role: docker-api/);
+      // What the docs offer in .env for workers actually reaches the controller.
+      for (const name of ['WORCA_WORKER_NETWORK', 'WORCA_INSTANCE_ID']) assert.match(workers, new RegExp(`\\n\\s+${name}: \\$\\{${name}:-\\}`), `${name} is forwarded`);
+      // The code's list of engines with a -full worker image is the release workflow's.
+      const fullRow = /if \(([^)]*)\) rows\.push\(\{ target: 'worker', engine: e, variant: 'full' \}\)/.exec(wf)?.[1] || '';
+      assert.deepEqual([...fullRow.matchAll(/e === '(\w+)'/g)].map((m) => m[1]).sort(), [...FULL_VARIANT_ENGINES].sort());
+      // One failed build row does not skip every manifest (each row checks its own digests).
+      assert.match(wf, /needs: \[plan, build\]\n(\s+#[^\n]*\n)+\s+if: \$\{\{ !cancelled\(\) && needs\.plan\.result == 'success' \}\}/);
       // The worca image run as a worker (WORCA_WORKER_IMAGE=self) builds its CA bundle before it execs.
       assert.match(read('docker/entrypoint.sh'), /\[ "\$\{2:-\}" = "worker" \]; then\n(\s+#[^\n]*\n)+\s+worca_corporate_ca\n\s+exec "\$@"/);
       // …but a row that built for one architecture only must not publish a tag the other cannot pull.

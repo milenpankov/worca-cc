@@ -37,7 +37,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { createK8sApi, K8sApiError } from './k8s-api.mjs';
-import { startFailure, passThroughEnv, defaultWorkerEngine } from '../shared.mjs';
+import { startFailure, passThroughEnv, defaultWorkerEngine, fullVariantEngines } from '../shared.mjs';
 import {
   renderPodSpec, resolveImage, normalizeVariant, podName, workerSelector, workerContainer, assertAllowedEnv,
   DEFAULT_IMAGE_PATTERN, ANNOTATION_SCOPE, LABEL_ENGINE, LABEL_BOOT, scopeLabel,
@@ -122,6 +122,7 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
   const imagePattern = String(env.WORCA_K8S_WORKER_IMAGE || '').trim() || DEFAULT_IMAGE_PATTERN;
   const version = String(env.WORCA_K8S_WORKER_TAG || '').trim() || packageVersion();
   const variant = normalizeVariant(env.WORCA_K8S_WORKER_VARIANT);
+  const fullEngines = fullVariantEngines(env);
   const images = envJson(env, 'WORCA_K8S_WORKER_IMAGES');
   if (images !== null && (typeof images !== 'object' || Array.isArray(images))) throw new Error('WORCA_K8S_WORKER_IMAGES must be a JSON object { engine: image }');
   // Per-engine overrides, the form the Helm chart renders from `worker.engines`: { <engine>: { image?, variant?, resources? } }.
@@ -132,7 +133,9 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
   const settingsFor = (engine) => {
     const o = engines?.[engine] && typeof engines[engine] === 'object' ? engines[engine] : {};
     return {
-      variant: o.variant ? normalizeVariant(o.variant) : variant,
+      // The install-wide `full` exists only for some engines' worker images (shared.mjs FULL_VARIANT_ENGINES); an
+      // engine's own setting is taken as given.
+      variant: o.variant ? normalizeVariant(o.variant) : (variant && !fullEngines.includes(engine) ? '' : variant),
       resources: o.resources && typeof o.resources === 'object' ? o.resources : resources,
       overrides: o.image ? { ...(images || {}), [engine]: String(o.image) } : images,
     };

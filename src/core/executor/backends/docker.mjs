@@ -9,7 +9,7 @@
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, INSTANCE_LABEL, NETWORK_ROLE_LABEL, passThroughEnv, defaultWorkerEngine } from '../shared.mjs';
+import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, INSTANCE_LABEL, NETWORK_ROLE_LABEL, FULL_VARIANT_ENGINES, fullVariantEngines, passThroughEnv, defaultWorkerEngine } from '../shared.mjs';
 
 export const DOCKER_API = 'v1.43';
 export { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL };
@@ -119,13 +119,23 @@ export function workerMountsFrom(selfMounts, { seedClaude = '/home/worca/.claude
 
 /** The worker image for an engine: WORCA_WORKER_IMAGE (with `{engine}`), `self` for the controller's own image,
  *  or `<controller repo>-worker:<tag>-<engine>`. */
-export function workerImageFor(engine, { pattern, controllerImage }) {
-  if (pattern && pattern !== 'self') return pattern.includes('{engine}') ? pattern.replaceAll('{engine}', engine) : pattern;
-  if (pattern === 'self' || !controllerImage) return controllerImage || null;
-  const at = controllerImage.lastIndexOf(':');
-  const slash = controllerImage.lastIndexOf('/');
-  const [repo, tag] = at > slash ? [controllerImage.slice(0, at), controllerImage.slice(at + 1)] : [controllerImage, 'latest'];
-  return `${repo}-worker:${tag}-${engine}`;
+export function workerImageFor(engine, { pattern, controllerImage, fullEngines = FULL_VARIANT_ENGINES }) {
+  let ref;
+  if (pattern && pattern !== 'self') {
+    if (!pattern.includes('{engine}')) return pattern;
+    ref = pattern.replaceAll('{engine}', engine);
+  } else {
+    if (pattern === 'self' || !controllerImage) return controllerImage || null;
+    const at = controllerImage.lastIndexOf(':');
+    const slash = controllerImage.lastIndexOf('/');
+    const [repo, tag] = at > slash ? [controllerImage.slice(0, at), controllerImage.slice(at + 1)] : [controllerImage, 'latest'];
+    ref = `${repo}-worker:${tag}-${engine}`;
+  }
+  // A `-full` tag (WORCA_TAG=1.3.0-full) names the variant AFTER the engine, as published: `<tag>-<engine>-full`,
+  // and only for the engines that have a full worker image; the others run their slim one.
+  const tail = `-full-${engine}`;
+  if (!ref.endsWith(tail)) return ref;
+  return `${ref.slice(0, -tail.length)}-${engine}${fullEngines.includes(engine) ? '-full' : ''}`;
 }
 
 /** The worker container's env: its assignment, plus what every backend lets a worker inherit (shared.mjs
@@ -190,6 +200,7 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   // on the same Docker host never lists or reaps them.
   const instance = String(env.WORCA_INSTANCE_ID || self.Config?.Labels?.['com.docker.compose.project'] || String(self.Name || selfId).replace(/^\//, '')).trim() || 'worca';
   const pattern = String(env.WORCA_WORKER_IMAGE || '').trim() || null;
+  const fullEngines = fullVariantEngines(env);
   const mem = parseBytes(env.WORCA_WORKER_MEM || '4g');
   const cpus = Number(env.WORCA_WORKER_CPUS || 2);
   const pidsLimit = Number(env.WORCA_WORKER_PIDS || 1024);
@@ -202,10 +213,10 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
     kind: 'docker',
     template,
     /** What tells this scope's workers apart: the image an engine runs on (one image for every engine = one worker). */
-    async classFor(engine) { return workerImageFor(engine || await engineFor(), { pattern, controllerImage: template.image }) || 'none'; },
+    async classFor(engine) { return workerImageFor(engine || await engineFor(), { pattern, controllerImage: template.image, fullEngines }) || 'none'; },
     async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine: asked = null }) {
       const engine = asked || await engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
-      const image = workerImageFor(engine, { pattern, controllerImage: template.image });
+      const image = workerImageFor(engine, { pattern, controllerImage: template.image, fullEngines });
       if (!image) throw new Error('no worker image: set WORCA_WORKER_IMAGE');
       const name = `worca-worker-${scope.kind}-${String(scope.id).replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40)}-${workerId.slice(-8)}`;
       const spec = {

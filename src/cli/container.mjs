@@ -29,6 +29,15 @@ export const OVERLAYS = Object.freeze(['egress', 'ssh', 'teams', 'clonein', 'wor
 export const WORKER_CONTAINER_LABEL = CONTROLLER_LABEL;   // the label the docker backend puts on every worker (executor/shared.mjs)
 export const WORKER_INSTANCE_LABEL = INSTANCE_LABEL;      // …and which installation it belongs to: the Compose project
 
+/**
+ * The installation name the docker backend labels this stack's workers with (docker.mjs): WORCA_INSTANCE_ID when
+ * the operator set one (compose.workers.yml hands it to the controller), else the Compose project — which Compose
+ * takes from the process environment first, then from `.env`, then from compose.yml's `name: worca`.
+ */
+export function workerInstanceOf({ dotEnv = () => null, env = {} } = {}) {
+  return dotEnv('WORCA_INSTANCE_ID') || env.WORCA_INSTANCE_ID || env.COMPOSE_PROJECT_NAME || dotEnv('COMPOSE_PROJECT_NAME') || 'worca';
+}
+
 /** Compose variables an overlay COMBINATION needs. With the egress allowlist on, the controller shares the
  *  internal network with its workers, never the open default one (compose.workers.yml WORCA_UPLINK_NETWORK). */
 export function overlayEnv(overlays = [], { already = null } = {}) {
@@ -341,7 +350,7 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
       // Worker containers (compose.workers.yml) are started by the controller, not by compose, so
       // `down` does not know them: whatever is left is removed by its label. Best effort.
       // Only this installation's: another worca stack on the same host keeps its workers.
-      const instance = readEnvValue(dir, 'WORCA_INSTANCE_ID') || (composeEnv ?? process.env).COMPOSE_PROJECT_NAME || 'worca';
+      const instance = workerInstanceOf({ dotEnv: (name) => readEnvValue(dir, name), env: composeEnv ?? process.env });
       const ps = exec(rt.bin, ['ps', '-aq', '--filter', `label=${WORKER_INSTANCE_LABEL}=${instance}`], { cwd: dir, env: composeEnv, stdio: ['ignore', 'pipe', 'ignore'] });
       const ids = String(ps.stdout || '').split(/\s+/).filter(Boolean);
       if (ids.length) {

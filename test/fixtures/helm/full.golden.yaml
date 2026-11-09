@@ -519,6 +519,9 @@ metadata:
     app.kubernetes.io/component: controller
 spec:
   type: ClusterIP
+  # A worker pod started by a controller that is not Ready (it resumes runs as it boots; readiness can flap under
+  # load) must still reach it: this port is the controller's own, token-authenticated, never routed to people.
+  publishNotReadyAddresses: true
   ports:
     - name: workers
       port: 4319

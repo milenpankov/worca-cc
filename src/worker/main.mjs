@@ -14,15 +14,16 @@
 // Exit codes: 0 after a shutdown, an idle timeout or a refusal it was told about; 1 when the
 // connection dropped; 78 (EX_CONFIG) when the assignment is incomplete; `--check` prints the
 // capabilities as JSON and exits 0 without connecting (image smoke tests).
-import { readFileSync, mkdirSync, existsSync, copyFileSync, chmodSync } from 'node:fs';
+import { readFileSync, mkdirSync, existsSync, copyFileSync, chmodSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { worcaHome } from '../core/projects.mjs';
 import { parseScopeKey } from '../core/executor/scope.mjs';
 import { probeCapabilities } from './capabilities.mjs';
 import { startWorker } from './client.mjs';
 import { startRelayShim, DEFAULT_RELAY_PORT } from './relay-shim.mjs';
 
+/** How long a worker keeps trying to make its FIRST connection to the controller. */
+const CONNECT_RETRY_MS = 30_000;
 export const EX_CONFIG = 78;
 
 /** The assignment from the environment, or `{ errors }`. Pure over `env`. */
@@ -47,7 +48,7 @@ export function readWorkerConfig(env = process.env) {
 }
 
 /** `worca worker [--check]` entry. Returns the exit code. */
-export async function runWorkerCli(args = [], { env = process.env, out = (l) => process.stdout.write(`${l}\n`), err = (l) => process.stderr.write(`${l}\n`) } = {}) {
+export async function runWorkerCli(args = [], { env = process.env, out = (l) => process.stdout.write(`${l}\n`), err = (l) => process.stderr.write(`${l}\n`), start = startWorker } = {}) {
   if (args.includes('--check')) {
     out(JSON.stringify(await probeCapabilities({ env }), null, 2));
     return 0;
@@ -62,17 +63,30 @@ export async function runWorkerCli(args = [], { env = process.env, out = (l) => 
   out(`worca worker ${cfg.workerId} for ${cfg.scope.kind}:${cfg.scope.id} — engines: ${installed.join(', ') || 'none'}; HOME ${cfg.home}`);
   // The token leaves the environment before any child can read it (children get their env from the controller anyway).
   delete env.WORCA_WORKER_TOKEN;
-  const w = startWorker({ ...cfg, capabilities, log: out });
+  let w = start({ ...cfg, capabilities, log: out });
   // The chat relay on this container's loopback (relay-shim.mjs); a chat turn's MCP child posts to it.
   let shim = null;
   const relayPort = Number(env.WORCA_WORKER_RELAY_PORT) > 0 ? Number(env.WORCA_WORKER_RELAY_PORT) : DEFAULT_RELAY_PORT;
-  try { shim = await startRelayShim({ relay: w.relay, port: relayPort, log: out }); }
+  try { shim = await startRelayShim({ relay: (token, line) => w.relay(token, line), port: relayPort, log: out }); }
   catch (e) { err(`worca worker: relay shim could not listen on 127.0.0.1:${relayPort} (${e.message}); chats on this worker will have no worca tools`); }
   const graceMs = Number(env.WORCA_SIGTERM_GRACE_MS) > 0 ? Number(env.WORCA_SIGTERM_GRACE_MS) : 5000;
-  const onSignal = () => { w.leave(graceMs); };
+  let stopping = false;
+  const onSignal = () => { stopping = true; w.leave(graceMs); };
   process.once('SIGTERM', onSignal);
   process.once('SIGINT', onSignal);
-  const code = await w.done;
+  // There is no reconnect once connected. But a FIRST connect that cannot be made — the controller's Service has no
+  // ready endpoint yet, its name does not resolve yet — is retried for a short while: the token is still good, and
+  // giving up at once would cost the run the controller's whole start timeout.
+  const retry = Number(env.WORCA_WORKER_CONNECT_RETRY_MS);
+  const deadline = Date.now() + (Number.isFinite(retry) && retry >= 0 ? retry : CONNECT_RETRY_MS);
+  let code;
+  for (let attempt = 1; ; attempt += 1) {
+    code = await w.done;
+    if (code === 0 || w.connected || w.refusedStatus != null || stopping || Date.now() >= deadline) break;
+    out(`worca worker: the controller at ${cfg.url} is not reachable yet (${w.endedWith}); trying again`);
+    await new Promise((r) => setTimeout(r, Math.min(500 * attempt, 3000)));
+    w = start({ ...cfg, capabilities, log: out });
+  }
   await shim?.close();
   return code;
 }
@@ -80,7 +94,7 @@ export async function runWorkerCli(args = [], { env = process.env, out = (l) => 
 /**
  * A Claude login stored on the controller (`docker compose run worca claude`, in its ~/.claude
  * volume) is not in a fresh worker HOME. With the volume mounted read-only at
- * WORCA_WORKER_SEED_CLAUDE, the login and settings are copied in once — never sessions or
+ * WORCA_WORKER_SEED_CLAUDE, the login and settings are copied in (and again when the seed is newer) — never sessions or
  * projects, which belong to this HOME. Under the broker or an env token nothing is needed.
  * @returns {string[]} the files copied
  */
@@ -92,11 +106,13 @@ export function seedClaudeLogin(home, seedDir) {
   for (const name of ['.credentials.json', 'settings.json']) {
     const from = join(dir, name);
     const to = join(target, name);
-    if (!existsSync(from) || existsSync(to)) continue;
+    if (!existsSync(from)) continue;
+    // Copied when this HOME has none, and again when the seed is NEWER: a HOME outlives one worker (a chat thread's,
+    // a paused run's), and a login renewed on the controller since must not leave it with a revoked one. A token
+    // this HOME's own engine refreshed is newer than the seed and stays.
+    if (existsSync(to)) { try { if (statSync(from).mtimeMs <= statSync(to).mtimeMs) continue; } catch { continue; } }
     try { mkdirSync(target, { recursive: true, mode: 0o700 }); copyFileSync(from, to); chmodSync(to, 0o600); copied.push(name); } catch { /* read-only seed, or nothing to copy */ }
   }
   return copied;
 }
 
-/** A worker id for a backend that lets the worker choose one (tests). */
-export function randomWorkerId(kind = 'run') { return `w-${kind}-${randomBytes(4).toString('hex')}`; }

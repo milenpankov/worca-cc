@@ -60,6 +60,11 @@ async function fakeApi() {
     }
     if (req.method === 'GET' && !name && u.searchParams.get('watch') === '1') {
       if (hooks.watchFail !== 0) { if (hooks.watchFail > 0) hooks.watchFail -= 1; req.socket.destroy(); return; }
+      if (hooks.watchError) {   // the API server answers the watch with an ERROR status, every time
+        hooks.watchErrors = (hooks.watchErrors || 0) + 1;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(`${JSON.stringify({ type: 'ERROR', object: { kind: 'Status', code: 500, message: 'etcdserver: request timed out' } })}\n`);
+      }
       const target = /^metadata\.name=(.+)$/.exec(u.searchParams.get('fieldSelector') || '')?.[1];
       res.writeHead(200, { 'content-type': 'application/json', 'transfer-encoding': 'chunked' });
       const pod = pods.get(target);
@@ -217,7 +222,7 @@ test('Unschedulable is logged and waited out until the pending timeout, whose er
   assert.match(err.message, /did not start within 0 s/);
   assert.match(err.message, /Unschedulable: 0\/3 nodes are available: insufficient cpu/);
   assert.ok(logs.some((l) => /unschedulable: 0\/3 nodes are available/.test(l)), logs.join('\n'));
-  await new Promise((r) => setTimeout(r, 30));
+  for (let i = 0; i < 200 && !fake.deletes.length; i++) await new Promise((r) => setTimeout(r, 10));   // the cleanup DELETE is not awaited by start()
   assert.deepEqual(fake.deletes.map((d) => d.name), [pod.metadata.name]);
 });
 
@@ -321,6 +326,27 @@ test("the engine a start names picks the image; an abandoned start stops watchin
   assert.equal((await q).name, 'AbortError');
   for (let i = 0; i < 100 && !fake.deletes.some((d) => d.name === pending.metadata.name); i++) await new Promise((r) => setTimeout(r, 10));
   assert.ok(fake.deletes.some((d) => d.name === pending.metadata.name), 'the pod nobody waits for is deleted');
+});
+
+test('the install-wide full variant applies only to engines that have a full worker image', async (t) => {
+  const { backend } = await setup(t, { WORCA_K8S_WORKER_VARIANT: 'full', WORCA_K8S_ENGINES: JSON.stringify({ gemini: { variant: 'full' } }) });
+  assert.equal(await backend.classFor('claude'), 'ghcr.io/sinishadjukic/worca-worker:9.9.9-claude-full');
+  assert.equal(await backend.classFor('all'), 'ghcr.io/sinishadjukic/worca-worker:9.9.9-all-full');
+  assert.equal(await backend.classFor('codex'), 'ghcr.io/sinishadjukic/worca-worker:9.9.9-codex', 'no codex-full image is published: its slim one');
+  assert.equal(await backend.classFor('gemini'), 'ghcr.io/sinishadjukic/worca-worker:9.9.9-gemini-full', "an engine's own setting is taken as given");
+});
+
+test('a watch the API server keeps answering with an error is retried with a growing pause, not in a tight loop', async (t) => {
+  const { fake, backend } = await setup(t);
+  fake.hooks.watchError = true;
+  const p = backend.start(startArgs());
+  const pod = await fake.nextCreated();
+  await new Promise((r) => setTimeout(r, 400));
+  // retryMs is 10 in this setup: pauses of 10, 20, 30… ms fit about eight tries in 400 ms; a tight loop makes hundreds.
+  assert.ok(fake.hooks.watchErrors >= 2 && fake.hooks.watchErrors <= 14, `watch requests in 400 ms: ${fake.hooks.watchErrors}`);
+  fake.hooks.watchError = false;
+  fake.update(pod.metadata.name, { phase: 'Running' });
+  assert.equal((await p).name, pod.metadata.name, 'and the start still succeeds once the API recovers');
 });
 
 test('listWorkers returns handles for this instance only', async (t) => {

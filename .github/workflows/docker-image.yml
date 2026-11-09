@@ -192,6 +192,9 @@ jobs:
   manifest:
     name: manifest + sign (${{ matrix.key }})
     needs: [plan, build]
+    # Not skipped when one build row failed: each manifest row checks its own digests (below) and publishes or
+    # refuses on its own, so a worker image that did not build never holds back the controller image.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     continue-on-error: ${{ matrix.fragile }}

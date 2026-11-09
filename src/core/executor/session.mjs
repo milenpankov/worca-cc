@@ -24,7 +24,6 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
   let byeSeen = false;
   let execSeq = 0;
   let pingTimer = null;
-  let pongTimer = null;
   let pending = 0;   // pings without a pong
   const startedAt = Date.now();
   let lastActiveAt = Date.now();
@@ -39,7 +38,7 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
     if (closed) return;
     closed = true;
     closeReason = reason;
-    clearInterval(pingTimer); clearTimeout(pongTimer);
+    clearInterval(pingTimer);
     for (const [id, h] of execs) { execs.delete(id); try { h.onLost(reason); } catch { /* listener */ } }
     for (const fn of closeFns) { try { fn(reason); } catch { /* listener */ } }
   };
@@ -51,7 +50,7 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
       case 'spawn-error': if (h) { execs.delete(frame.id); h.onSpawnError({ code: frame.code ?? null, message: frame.message }); } return;
       case 'out':
         lastActiveAt = Date.now();
-        if (h) h.onLines({ stream: frame.stream, lines: frame.lines });
+        if (h) h.onLines({ stream: frame.stream, lines: frame.lines, more: frame.more === true });
         // Flow control: acknowledge every Nth frame; the worker pauses past its window otherwise.
         if (frame.seq % ackEvery === ackEvery - 1) trySend({ type: 'ack', id: frame.id, seq: frame.seq });
         return;
@@ -60,7 +59,7 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
         if (h) { execs.delete(frame.id); h.onExit({ code: frame.code, signal: frame.signal }); }
         return;
       case 'ping': trySend({ type: 'pong', id: frame.id }); return;
-      case 'pong': pending = 0; clearTimeout(pongTimer); return;
+      case 'pong': pending = 0; return;
       case 'relay':
         if (!onRelay) { trySend({ type: 'relay-result', id: frame.id, lines: null, error: 'relay is not available' }); return; }
         Promise.resolve().then(() => onRelay(frame)).then(

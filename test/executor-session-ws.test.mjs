@@ -321,6 +321,30 @@ test('a worker whose container takes longer to come up than the token lives stil
   } finally { await reg2.closeAll(); }
 });
 
+test('a malformed WebSocket frame before the hello closes that socket and nothing else', async () => {
+  const captured = [];
+  const b = { start(o) { captured.push(o); return new Promise(() => {}); }, async remove() {}, async listWorkers() { return []; }, describe() { return {}; } };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, log: () => {} });
+  await reg2.listen();
+  try {
+    const waiting = reg2.acquire({ kind: 'run', id: 'bad' }).then(() => null, (e) => e);
+    for (let i = 0; i < 100 && !captured.length; i++) await new Promise((r) => setTimeout(r, 5));
+    const ws = new WebSocket(`${reg2.controllerUrl}/worker`, { headers: { authorization: `Bearer ${captured[0].token}` } });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+    const closed = new Promise((resolve) => ws.on('close', resolve));
+    ws.on('error', () => {});
+    // FIN + RSV1..3 set, a masked empty text frame: the server's receiver rejects it ("RSV2 and RSV3 must be clear").
+    // Without an 'error' listener on the server's socket that is an uncaught exception in the controller process —
+    // which would fail this whole test file.
+    ws._socket.write(Buffer.from([0xF1, 0x80, 0x00, 0x00, 0x00, 0x00]));
+    await closed;
+    await new Promise((r) => setTimeout(r, 30));
+    assert.deepEqual(reg2.snapshot().map((e) => e.state), ['starting'], 'the registry is alive and the start goes on');
+    await reg2.release({ kind: 'run', id: 'bad' }, { reason: 'test' });
+    assert.match((await waiting).message, /released before it connected/);
+  } finally { await reg2.closeAll(); }
+});
+
 test('a hello that arrives after its start was released is refused: a release is never undone by a late worker', async () => {
   const captured = [];
   const removed = [];

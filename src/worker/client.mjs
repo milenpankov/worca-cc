@@ -5,10 +5,10 @@
 // which case every child is killed and the process exits non-zero: a worker never outlives
 // its controller connection (there is no reconnect; the controller starts a fresh worker).
 import { WebSocket } from 'ws';
-import { encodeFrame, decodeFrame, PROTOCOL_VERSION } from '../core/executor/protocol.mjs';
+import { encodeFrame, decodeFrame, PROTOCOL_VERSION, WORKER_WS_PATH, WS_MAX_PAYLOAD } from '../core/executor/protocol.mjs';
 import { createExecRunner } from './exec.mjs';
 
-export const WORKER_WS_PATH = '/worker';
+export { WORKER_WS_PATH };
 const DEFAULT_PING_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 
@@ -32,8 +32,11 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
   let missed = 0;
   let serverPingMs = pingMs;
   let shuttingDown = false;
+  let connected = false;        // the socket opened at least once
+  let refusedStatus = null;     // the controller answered the upgrade with an HTTP status (a dead token: 401)
+  let endedWith = null;
 
-  const ws = new WebSocket(target, { headers: { authorization: `Bearer ${token}` }, handshakeTimeout: CONNECT_TIMEOUT_MS, maxPayload: 8 * 1024 * 1024 + 1024 });
+  const ws = new WebSocket(target, { headers: { authorization: `Bearer ${token}` }, handshakeTimeout: CONNECT_TIMEOUT_MS, maxPayload: WS_MAX_PAYLOAD });
   const send = (frame) => { if (ws.readyState === WebSocket.OPEN) ws.send(encodeFrame(frame)); };
   const runner = createExecRunner({ send, home, log });
   // Relay (relay-shim.mjs): a chat's worca tools run on the controller; each JSON-RPC line goes up as a
@@ -51,6 +54,7 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
     if (finished) return;
     finished = true;
     exitCode = code;
+    endedWith = why;
     clearTimeout(idleTimer); clearInterval(pingTimer);
     for (const [id, r] of relays) { relays.delete(id); r.resolve({ lines: null, error: `worker done: ${why}` }); }
     runner.killAll();
@@ -83,6 +87,7 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
   };
 
   ws.on('open', () => {
+    connected = true;
     send({ type: 'hello', apiVersion: PROTOCOL_VERSION, workerId, scope, pid: process.pid, capabilities });
   });
   ws.on('message', (data) => {
@@ -114,11 +119,16 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
   });
   ws.on('close', (code, reason) => finish(shuttingDown ? 0 : 1, `socket closed (${code}${reason?.length ? ` ${reason}` : ''})`));
   ws.on('error', (err) => finish(1, `socket error: ${err?.message || err}`));
-  ws.on('unexpected-response', (_req, res) => finish(1, `controller answered ${res.statusCode}`));
+  ws.on('unexpected-response', (_req, res) => { refusedStatus = res.statusCode; finish(1, `controller answered ${res.statusCode}`); });
 
   return {
     done,
     get exitCode() { return exitCode; },
+    /** Whether the socket ever opened, the HTTP status of a refused upgrade, and why it ended: a first connect that
+     *  could not be MADE (the controller's address not answering yet) is worth another try; anything else is final. */
+    get connected() { return connected; },
+    get refusedStatus() { return refusedStatus; },
+    get endedWith() { return endedWith; },
     get liveCount() { return runner.liveCount; },
     send,
     relay,

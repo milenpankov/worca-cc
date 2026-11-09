@@ -70,6 +70,11 @@ test('encode refuses an invalid or oversize frame; decode returns null on garbag
   assert.throws(() => encodeFrame(huge), { code: 'E2BIG' });
   // A spawn without a cwd is valid, as it is locally: null means the worker's own.
   assert.equal(isValidFrame({ ...exec, cwd: null }), true);
+  // An output frame may say that its last line continues in the next frame.
+  const out = { type: 'out', id: 'x1', seq: 0, stream: 'out', lines: ['part'] };
+  assert.equal(isValidFrame({ ...out, more: true }), true);
+  assert.equal(isValidFrame(out), true);
+  assert.equal(isValidFrame({ ...out, more: 'yes' }), false);
   assert.equal(isValidFrame({ ...exec, cwd: '' }), false);
   assert.equal(decodeFrame('{not json'), null);
   assert.equal(decodeFrame('{"type":"nope"}'), null);

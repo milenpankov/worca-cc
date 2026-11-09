@@ -14,6 +14,13 @@ export const INSTANCE_LABEL = 'worca.instance';
 /** On a Docker NETWORK: `worca.role=docker-api` marks the one the socket proxy lives on. No worker is ever put there. */
 export const NETWORK_ROLE_LABEL = 'worca.role';
 
+/** Engines whose worker image has a `-full` build (the release workflow's plan); the others exist slim only. */
+export const FULL_VARIANT_ENGINES = Object.freeze(['claude', 'all']);
+export function fullVariantEngines(env = process.env) {
+  const v = String(env.WORCA_WORKER_FULL_ENGINES || '').trim();
+  return v ? v.split(',').map((s) => s.trim()).filter(Boolean) : [...FULL_VARIANT_ENGINES];
+}
+
 /** A worker that could not be started: the harness's failure policy treats it like a lost network. */
 export function startFailure(message, extra = {}) {
   return Object.assign(new Error(message), { code: 'EWORKERSTART', errorClass: 'network', ...extra });

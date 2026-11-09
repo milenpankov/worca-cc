@@ -35,6 +35,9 @@ export const OUT_FLUSH_MS = 20;
 
 export const SIGNALS = Object.freeze(['SIGTERM', 'SIGKILL', 'SIGINT']);
 export const STREAMS = Object.freeze(['out', 'err']);
+/** Where a worker connects on the controller's worker port, and the largest WebSocket message either side accepts. */
+export const WORKER_WS_PATH = '/worker';
+export const WS_MAX_PAYLOAD = 8 * 1024 * 1024 + 1024;
 export const LOG_LEVELS = Object.freeze(['info', 'warn', 'error']);
 
 export const WORKER_FRAMES = Object.freeze(['hello', 'started', 'spawn-error', 'out', 'exit', 'ping', 'pong', 'relay', 'log', 'bye']);
@@ -89,7 +92,10 @@ export function isValidFrame(frame) {
       return id(frame.id) && (frame.code === null || frame.code === undefined || str(frame.code, 64)) && str(frame.message, 4096);
     case 'out':
       return id(frame.id) && Number.isInteger(frame.seq) && frame.seq >= 0 && STREAMS.includes(frame.stream)
-        && Array.isArray(frame.lines) && frame.lines.length >= 1 && frame.lines.every((l) => typeof l === 'string');
+        && Array.isArray(frame.lines) && frame.lines.length >= 1 && frame.lines.every((l) => typeof l === 'string')
+        // `more`: the frame's last line is not finished — it continues in the stream's next frame (a line too long
+        // for one frame travels in pieces and must arrive as the ONE line it was).
+        && (frame.more === undefined || typeof frame.more === 'boolean');
     case 'ack':
       return id(frame.id) && Number.isInteger(frame.seq) && frame.seq >= 0;
     case 'exit':

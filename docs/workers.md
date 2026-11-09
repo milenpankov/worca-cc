@@ -56,8 +56,9 @@ gets one worker per image, and they end together.
   left is nobody's).
 - **Tokens.** A worker's one-time token is good for as long as its container is still coming up
   (an image pull on a cold node may take minutes), then for two minutes once it exists.
-- **Output.** A worker sends output in frames of bounded size: a very long line travels alone, or in
-  pieces when no frame can hold it, and a stream without newlines is cut into pieces.
+- **Output.** A worker sends output in frames of bounded size. A very long line travels alone, or in
+  pieces when no frame can hold it; the pieces are marked and the controller puts the line back
+  together, so a multi-megabyte JSON line arrives as the one line it was.
 
 ## Configuration
 
@@ -69,6 +70,9 @@ gets one worker per image, and they end together.
 | `WORCA_CONTROLLER_URL` | controller | the URL workers are told to connect to (`ws://<service>:4319`). **Required** with `docker` and `kubernetes` (the Compose overlay and the chart set it): a worker in another container cannot dial the controller's loopback, and the server refuses to start without it |
 | `WORCA_WORKER_MAX` | controller | containers at once (default 20); runs are also bounded by Settings › Runs |
 | `WORCA_WORKER_ENGINE` | controller | the engine a worker gets when a spawn names none and the scope has none (default: the `run.engine` setting) |
+| `WORCA_WORKER_FULL_ENGINES` | controller | engines whose worker image has a `-full` build (default `claude,all`, what is published): the `full` variant applies to these, the others run their slim image |
+| `WORCA_WORKER_PASS_ENV` | worker | more of the worker's own variable names to hand to its children ([Credentials on workers](#credentials-on-workers)) |
+| `WORCA_WORKER_CONNECT_RETRY_MS` | worker | how long a worker keeps trying to make its first connection (default 30 s); once connected there is no reconnect |
 | `WORCA_WORKER_CHAT_IDLE_MS` | controller | a chat worker leaves after this long with nothing to run (default 15 min) |
 | `WORCA_WORKER_START_TIMEOUT_MS` | controller | how long a worker may take to connect (default 2 min) |
 | `WORCA_DB_DIR` | controller | the database's own directory, off the shared volume (SQLite's WAL needs a local filesystem) |
@@ -96,13 +100,20 @@ an agent on a worker:
   `.env` on Compose, the controller's Secret on Kubernetes — is therefore in the agent's
   environment on the worker too, unless the run's guardrail set scrubs the environment.
 - **The worker's own environment.** On Kubernetes, `worker.credentialsSecret` is the worker pod's
-  `envFrom`; on Compose the controller's `.env` is the only source.
+  `envFrom`; on Compose the controller's `.env` is the only source. A worker hands its children its
+  own variables that are engine credentials or their settings, by name — `*_API_KEY`, `*_AUTH_TOKEN`,
+  `ANTHROPIC_*`, `CLAUDE_CODE_*`, `OPENAI_*`, `GEMINI_*`, `GOOGLE_*`, `VERTEX*`, `AWS_*`, `AZURE_*`,
+  `COPILOT_*`, `CURSOR_*`, `GOOSE_*`, `DASHSCOPE_*`, `OPENROUTER_*`, plus any name listed in
+  `WORCA_WORKER_PASS_ENV` — when the controller sent none of that name (the controller's wins).
+  Never `WORCA_*`, and never `GH_TOKEN` / `GITHUB_TOKEN`: agents get no Git credential. A guardrail
+  set that scrubs the environment scrubs what the controller sends, not these: a key agents must
+  not be able to read belongs in the [credential broker](credential-broker.md).
 
 What that means per engine:
 
 | Engine | Works on a worker | Does not persist on a worker |
 | --- | --- | --- |
-| Claude Code | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`; the [credential broker](credential-broker.md); on Compose also the interactive login (`worca container login`), which workers copy once from the controller's `claude-config` volume (`/seed/claude`) | — |
+| Claude Code | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`; the [credential broker](credential-broker.md); on Compose also the interactive login (`worca container login`), which workers copy from the controller's `claude-config` volume (`/seed/claude`) — again whenever it is newer than their own, so a login renewed on the controller reaches a chat thread's or a paused run's HOME | — |
 | Codex | `OPENAI_API_KEY`, or an OpenAI-compatible endpoint with its key set up on the Models page | the ChatGPT sign-in (`codex login`) |
 | Gemini CLI | `GEMINI_API_KEY` (or Vertex AI's variables) | the Google account sign-in |
 | Qwen Code | a provider in the environment (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`) | its OAuth sign-in |

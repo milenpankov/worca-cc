@@ -61,6 +61,20 @@ test('kill() relays the signal through the session while the exec lives, and is 
   assert.equal(s.signals.length, 2);
 });
 
+test('a line that travelled in pieces arrives as the one line it was', async () => {
+  const s = fakeSession();
+  const child = createRemoteChild(s, spec);
+  const out = lines(child.stdout); lines(child.stderr);
+  s.handlers.onStarted({ pid: 7 });
+  s.handlers.onLines({ stream: 'out', lines: ['before'] });
+  s.handlers.onLines({ stream: 'out', lines: ['{"big":"aaa'], more: true });
+  s.handlers.onLines({ stream: 'out', lines: ['bbb'], more: true });
+  s.handlers.onLines({ stream: 'out', lines: ['ccc"}', 'after'] });
+  s.handlers.onExit({ code: 0, signal: null });
+  await once(child, 'close');
+  assert.deepEqual(out, ['before', '{"big":"aaabbbccc"}', 'after'], 'no newline was put inside the long line');
+});
+
 test('a spawn error on the worker becomes an error event carrying the code', async () => {
   const s = fakeSession();
   const child = createRemoteChild(s, spec);

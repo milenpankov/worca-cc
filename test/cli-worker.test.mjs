@@ -84,16 +84,23 @@ import { tmpdir } from 'node:os';
 
 test('lineSplitter: lines as readline gives them, with a bounded buffer for a stream that has no newline', () => {
   const got = [];
-  const s = lineSplitter((l) => got.push(l), { maxPartial: 8 });
+  const push = (l, more) => got.push(more ? [l, 'more'] : l);
+  const s = lineSplitter(push, { maxPartial: 8 });
   s.write(Buffer.from('one\ntw')); s.write('o\r\n\nlast');
   s.end();
   assert.deepEqual(got, ['one', 'two', '', 'last']);
+  // A lone CR ends a line too (a progress bar rewriting itself), as with readline; CRLF split across chunks is one end.
   got.length = 0;
-  const t = lineSplitter((l) => got.push(l), { maxPartial: 8 });
+  const cr = lineSplitter(push);
+  cr.write('10%\r50%\r'); cr.write('100%\r'); cr.write('\ndone\r'); cr.write('x'); cr.end();
+  assert.deepEqual(got, ['10%', '50%', '100%', 'done', 'x']);
+  // No line end at all: pieces of at most maxPartial, each but the last saying that more of the line follows.
+  got.length = 0;
+  const t = lineSplitter(push, { maxPartial: 8 });
   t.write('abcdefghijklmnopqrstu'); t.write('vwx\ny'); t.end();
-  assert.deepEqual(got, ['abcdefgh', 'ijklmnop', 'qrstuvwx', 'y'], 'never more than maxPartial characters held');
+  assert.deepEqual(got, [['abcdefgh', 'more'], ['ijklmnop', 'more'], 'qrstuvwx', 'y'], 'never more than maxPartial characters held');
   got.length = 0;
-  const u = lineSplitter((l) => got.push(l));
+  const u = lineSplitter(push);
   const euro = Buffer.from('€uro\n');
   u.write(euro.subarray(0, 2)); u.write(euro.subarray(2)); u.end();
   assert.deepEqual(got, ['€uro'], 'a multi-byte character split across chunks is kept whole');
@@ -120,13 +127,85 @@ test('a worker survives output no frame can hold: long lines travel alone or in 
   assert.deepEqual([exit?.code, exit?.signal], [0, null], 'the child ran to its end; the worker did not crash');
   const outFrames = frames.filter((f) => f.type === 'out' && f.stream === 'out');
   for (const f of outFrames) assert.ok(Buffer.byteLength(JSON.stringify(f), 'utf8') <= MAX_FRAME_BYTES);
-  const lines = outFrames.flatMap((f) => f.lines);
+  // Put back together the way the controller does (remote-child): lines joined by a newline, and no newline after a
+  // frame that says its last line continues.
+  const text = outFrames.map((f) => f.lines.join('\n') + (f.more ? '' : '\n')).join('');
+  const lines = text.split('\n');
   assert.equal(lines[0], 'small');
   assert.equal(lines[1].length, 6 * 1024 * 1024, 'a long line that fits a frame arrives whole');
-  const tailAt = lines.indexOf('tail');
-  const control = lines.slice(2, tailAt);
-  assert.ok(control.length > 1, 'a line no frame can hold is cut into pieces');
-  assert.equal(control.join('').length, 3 * 1024 * 1024, 'and none of it is lost');
-  assert.equal(lines.slice(tailAt + 1).join('').length, 9 * 1024 * 1024, 'the newline-free tail arrives complete, in bounded pieces');
+  assert.ok(outFrames.filter((f) => f.more).length >= 3, 'what no frame can hold travelled in pieces');
+  assert.equal(lines[2], '\u0001'.repeat(3 * 1024 * 1024), 'and is the ONE line it was: nothing lost, no newline put inside it');
+  assert.equal(lines[3], 'tail');
+  assert.equal(lines[4], 'z'.repeat(9 * 1024 * 1024), 'the newline-free tail too');
   assert.deepEqual(outFrames.map((f) => f.seq), outFrames.map((_, i) => i), 'sequence numbers stay dense');
+});
+
+import { passesFromWorker } from '../src/worker/exec.mjs';
+import { runWorkerCli, seedClaudeLogin } from '../src/worker/main.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+
+test("the worker's own engine credentials reach its children when the controller sent none", () => {
+  // Kubernetes: worker.credentialsSecret puts the model key in the WORKER pod; the controller may not have it at all.
+  const workerEnv = { OPENAI_API_KEY: 'sk-worker', ANTHROPIC_API_KEY: 'sk-ant-worker', CLAUDE_CODE_OAUTH_TOKEN: 'oat', GEMINI_API_KEY: 'g', COPILOT_GITHUB_TOKEN: 'ghu', AWS_REGION: 'eu-west-1',
+    MY_GATEWAY_KEY: 'gw', WORCA_WORKER_PASS_ENV: 'MY_GATEWAY_KEY, OTHER',
+    WORCA_WORKER_TOKEN: 'one-time', WORCA_CONTROLLER_URL: 'ws://c:4319', GH_TOKEN: 'ghp', GITHUB_TOKEN: 'ghs', PATH: '/worker/bin', HOSTNAME: 'worca-w-run-1', KUBERNETES_SERVICE_HOST: '10.0.0.1' };
+  const e = childEnv({ PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant-controller' }, { home: '/h', workerEnv, exists: () => true });
+  assert.equal(e.OPENAI_API_KEY, 'sk-worker');
+  assert.equal(e.CLAUDE_CODE_OAUTH_TOKEN, 'oat');
+  assert.equal(e.GEMINI_API_KEY, 'g');
+  assert.equal(e.COPILOT_GITHUB_TOKEN, 'ghu');
+  assert.equal(e.AWS_REGION, 'eu-west-1');
+  assert.equal(e.MY_GATEWAY_KEY, 'gw', 'a name the operator listed in WORCA_WORKER_PASS_ENV');
+  assert.equal(e.ANTHROPIC_API_KEY, 'sk-ant-controller', "what the controller composed wins over the worker's own");
+  assert.equal(e.PATH, '/usr/bin', "the worker's container baseline is not the child's");
+  for (const name of ['WORCA_WORKER_TOKEN', 'WORCA_CONTROLLER_URL', 'WORCA_WORKER_PASS_ENV', 'GH_TOKEN', 'GITHUB_TOKEN', 'HOSTNAME', 'KUBERNETES_SERVICE_HOST']) assert.equal(e[name], undefined, name);
+  assert.equal(passesFromWorker('WORCA_BROKER_SECRET', ['WORCA_BROKER_SECRET']), false, 'never, even when listed');
+  assert.equal(passesFromWorker('GH_TOKEN', ['GH_TOKEN']), false, 'agents get no Git credential');
+});
+
+test('a Claude login renewed on the controller replaces the one a long-lived worker HOME was seeded with', () => {
+  const root = mkdtempSync(join(tmpdir(), 'worca-reseed-'));
+  try {
+    const seed = join(root, 'seed'); const home = join(root, 'home');
+    mkdirSync(seed, { recursive: true }); mkdirSync(home, { recursive: true });
+    writeFileSync(join(seed, '.credentials.json'), '{"tok":"old"}');
+    assert.deepEqual(seedClaudeLogin(home, seed), ['.credentials.json']);
+    assert.deepEqual(seedClaudeLogin(home, seed), [], 'same login: nothing copied again');
+    // The operator logs in again on the controller: the seed is newer than what this HOME (a chat thread's) holds.
+    writeFileSync(join(seed, '.credentials.json'), '{"tok":"new"}');
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(join(seed, '.credentials.json'), later, later);
+    assert.deepEqual(seedClaudeLogin(home, seed), ['.credentials.json']);
+    assert.equal(readFileSync(join(home, '.claude', '.credentials.json'), 'utf8'), '{"tok":"new"}');
+    // A token this HOME's own claude refreshed is newer than the seed: it stays.
+    writeFileSync(join(home, '.claude', '.credentials.json'), '{"tok":"refreshed-here"}');
+    const evenLater = new Date(Date.now() + 120_000);
+    utimesSync(join(home, '.claude', '.credentials.json'), evenLater, evenLater);
+    assert.deepEqual(seedClaudeLogin(home, seed), []);
+    assert.equal(readFileSync(join(home, '.claude', '.credentials.json'), 'utf8'), '{"tok":"refreshed-here"}');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a first connection that cannot be made is tried again; a refused or a dropped one is final', { timeout: 60000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'worca-retry-'));
+  const env = () => ({ PATH: '', WORCA_CONTROLLER_URL: 'ws://worca-workers:4319', WORCA_WORKER_SCOPE: 'run:r1', WORCA_WORKER_TOKEN: 't', WORCA_WORKER_ID: 'w-run-1',
+    WORCA_WORKER_HOME: join(root, 'home'), WORCA_WORKER_RELAY_PORT: String(40000 + Math.floor(Math.random() * 20000)), WORCA_WORKER_CONNECT_RETRY_MS: '20000' });
+  const fake = (o) => ({ done: Promise.resolve(o.code), connected: !!o.connected, refusedStatus: o.refusedStatus ?? null, endedWith: o.why || 'x', relay: async () => ({ lines: null, error: 'n/a' }), leave() {} });
+  try {
+    // The controller's Service has no ready endpoint yet: refused twice, then it connects and later shuts down cleanly.
+    const script = [{ code: 1, why: 'socket error: connect ECONNREFUSED' }, { code: 1, why: 'socket error: getaddrinfo EAI_AGAIN' }, { code: 0, connected: true, why: 'shutdown' }];
+    let n = 0; const outs = [];
+    assert.equal(await runWorkerCli([], { env: env(), out: (l) => outs.push(l), err: () => {}, start: () => fake(script[n++]) }), 0);
+    assert.equal(n, 3);
+    assert.equal(outs.filter((l) => /is not reachable yet \(socket error: .*\); trying again/.test(l)).length, 2);
+    // A dead token (401) is an answer, not an absence: no second try.
+    n = 0;
+    assert.equal(await runWorkerCli([], { env: env(), out: () => {}, err: () => {}, start: () => { n++; return fake({ code: 1, refusedStatus: 401, why: 'controller answered 401' }); } }), 1);
+    assert.equal(n, 1);
+    // Connected, then the socket dropped: there is no reconnect.
+    n = 0;
+    assert.equal(await runWorkerCli([], { env: env(), out: () => {}, err: () => {}, start: () => { n++; return fake({ code: 1, connected: true, why: 'socket closed (1006)' }); } }), 1);
+    assert.equal(n, 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

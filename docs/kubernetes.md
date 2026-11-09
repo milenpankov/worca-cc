@@ -203,6 +203,12 @@ Worker pods carry `worca.dev/instance=<instanceId>` (what the controller lists a
 `worca.dev/scope`, `worca.dev/engine` and `worca.dev/boot`; the pod template's own
 `app.kubernetes.io/*` labels are left as the chart wrote them, since its NetworkPolicies select on them.
 
+A worker hands these variables to the engines by name (model-provider credentials and their
+settings; the list is in workers.md). `image.variant: full` applies to the engines that have a full
+worker image (`claude`, `all`); the others run their slim one. The workers Service publishes the
+controller's address while the pod is not Ready, and a worker retries its first connection for a
+short while, so a run resumed as the controller boots still gets its worker.
+
 Other engines take their credential the same way — a variable in `worker.credentialsSecret`
 (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `CURSOR_API_KEY`, `COPILOT_GITHUB_TOKEN`, …): the table and
 the limitation (no interactive sign-in persists on a worker) are in
