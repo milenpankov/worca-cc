@@ -41,16 +41,18 @@ export function passesFromWorker(name, extra = []) {
 const CA_FILE_VARS = ['SSL_CERT_FILE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'];
 const WORKER_LOCAL_ENV = [...CA_FILE_VARS, 'npm_config_cache', 'UV_CACHE_DIR', 'PLAYWRIGHT_BROWSERS_PATH'];
 
-export function childEnv(env, { home, workerPid = process.pid, user = null, workerEnv = process.env, exists = existsSync } = {}) {
+export function childEnv(env, { home, workerPid = process.pid, user = null, workerEnv = process.env, exists = existsSync, withheld = [] } = {}) {
   const out = { ...env };
   for (const k of WORKER_ONLY_ENV) delete out[k];
   for (const k of PROXY_VARS) if (out[k] && isLoopbackUrl(out[k])) delete out[k];
   // The worker's OWN engine credentials (worker.credentialsSecret on Kubernetes puts them in this container, not in
   // the controller) reach the child when the controller sent none of that name. Only names that look like one: the
-  // worker's container baseline (PATH, service links, its assignment) is not the child's business.
+  // worker's container baseline (PATH, service links, its assignment) is not the child's business. And never a name
+  // the controller left out on purpose (`withheld`: its env scrub or the broker removed it; this must not undo that).
   const extra = String(workerEnv?.WORCA_WORKER_PASS_ENV || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const kept = new Set(Array.isArray(withheld) ? withheld : []);
   for (const [k, v] of Object.entries(workerEnv || {})) {
-    if (out[k] !== undefined || v === undefined || v === '' || !passesFromWorker(k, extra)) continue;
+    if (out[k] !== undefined || v === undefined || v === '' || kept.has(k) || !passesFromWorker(k, extra)) continue;
     out[k] = v;
   }
   // This container's own value wins (its entrypoint rebuilt the CA bundle and set the caches); a CA file path that
@@ -78,6 +80,19 @@ const SPLIT_CHARS = 1024 * 1024;              // worst case 6 bytes of JSON per 
 const MAX_PARTIAL_CHARS = 8 * 1024 * 1024;
 const FRAME_BUDGET = MAX_FRAME_BYTES - 64 * 1024;
 const fitsAFrame = (line) => Buffer.byteLength(JSON.stringify(line), 'utf8') <= FRAME_BUDGET;
+/** Where to cut `text` at about `n` characters: one earlier when `n` falls between the two halves of a surrogate pair
+ *  (each piece is encoded on its own on the far side, where half a pair becomes U+FFFD). */
+export function cutPoint(text, n) {
+  if (n >= text.length) return text.length;
+  const c = text.charCodeAt(n - 1);
+  return n > 1 && c >= 0xD800 && c <= 0xDBFF ? n - 1 : n;
+}
+/** `text` in pieces of at most `size` characters, no surrogate pair split. */
+export function piecesOf(text, size) {
+  const out = [];
+  for (let at = 0; at < text.length;) { const end = at + cutPoint(text.slice(at, at + size + 1), size); out.push(text.slice(at, end)); at = end; }
+  return out;
+}
 
 /**
  * Lines out of a byte stream, as readline gives them (`\n`, `\r\n` or a lone `\r` end a line; the last line with or
@@ -100,7 +115,7 @@ export function lineSplitter(onLine, { maxPartial = MAX_PARTIAL_CHARS } = {}) {
       start = i + 1;
     }
     partial += text.slice(start);
-    while (partial.length > maxPartial) { onLine(partial.slice(0, maxPartial), true); partial = partial.slice(maxPartial); }
+    while (partial.length > maxPartial) { const n = cutPoint(partial, maxPartial); onLine(partial.slice(0, n), true); partial = partial.slice(n); }
   };
   return {
     write(chunk) { feed(typeof chunk === 'string' ? chunk : decoder.write(chunk)); },
@@ -149,7 +164,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
   const queueLine = (e, id, stream, line, more = false) => {
     if (more || line.length > BIG_LINE_CHARS) {
       flush(e, id);   // what was pending goes first: order within the stream is kept
-      const pieces = fitsAFrame(line) ? [line] : Array.from({ length: Math.ceil(line.length / SPLIT_CHARS) }, (_, i) => line.slice(i * SPLIT_CHARS, (i + 1) * SPLIT_CHARS));
+      const pieces = fitsAFrame(line) ? [line] : piecesOf(line, SPLIT_CHARS);
       pieces.forEach((piece, i) => sendOut({ type: 'out', id, seq: e.seq++, stream, lines: [piece], ...(more || i < pieces.length - 1 ? { more: true } : {}) }));
       pauseIfBehind(e);
       return;
@@ -171,7 +186,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
       try {
         child = spawn(frame.file, frame.args, {
           cwd: frame.cwd || undefined,   // none named: this worker's own (as a local spawn without cwd)
-          env: childEnv(frame.env, { home, user }),
+          env: childEnv(frame.env, { home, user, withheld: frame.withheld }),
           stdio: [frame.stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
           detached: frame.detached !== false && platform !== 'win32',
           windowsHide: true,

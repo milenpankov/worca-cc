@@ -494,6 +494,7 @@ export async function runGooseProcess({
     const res = await superviseSpawn({
       cli: GOOSE_CLI,
       file: bin, args, displayBin: bin, cwd, env, stdin, signal: spawnSignal, asAgent, stagedDir: asAgent ? dir : null, onEvent,
+      ...(ask ? { workerMinVersion: GOOSE_ASK_MIN_VERSION } : {}),
       ...(ask && agentId ? { agentHome: () => home } : {}),
       cleanup: () => {},
       stdoutErrorDetail: () => { const e = normalizer.finish().error; return e && e !== NO_COMPLETE ? e : ''; },

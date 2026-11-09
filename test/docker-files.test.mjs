@@ -117,6 +117,7 @@ test('Dockerfile: controller last; the worker stage runs as worca with no sudo, 
     } },
     { name: 'entrypoint-worker.sh: strict, execs, exits 78 for an incomplete assignment, never setpriv or sudo', run: () => {
       const e = read('docker/entrypoint-worker.sh');
+      assert.doesNotMatch(e, /--version/, 'the worker probes its engines once, for its hello: the entrypoint does not run them a second time');
       assert.match(e, /^set -euo pipefail$/m);
       assert.match(e, /^exec "\$@"$/m, 'SIGTERM must reach the worker');
       assert.match(e, /exit 78/, 'EX_CONFIG for a missing variable or an unwritable volume');

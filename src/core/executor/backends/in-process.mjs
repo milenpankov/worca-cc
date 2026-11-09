@@ -8,8 +8,11 @@ import { join } from 'node:path';
 import { startWorker } from '../../../worker/client.mjs';
 import { probeCapabilities } from '../../../worker/capabilities.mjs';
 
-export function createInProcessBackend({ homeRoot, capabilities = null, log = () => {}, beforeStart = null } = {}) {
+/** `probe`: look for the engines on this machine, as a worker container does (the server's own in-process mode);
+ *  without it — a test's backend — the worker reports none it was not handed in `capabilities`. */
+export function createInProcessBackend({ homeRoot, capabilities = null, probe = false, log = () => {}, beforeStart = null } = {}) {
   const workers = new Map();   // workerId -> handle
+  let probed = null;           // one probe for every worker: they all run in this process
   const started = [];
   return {
     kind: 'in-process',
@@ -19,7 +22,7 @@ export function createInProcessBackend({ homeRoot, capabilities = null, log = ()
       if (beforeStart) await beforeStart({ scope, scopeKey, workerId, engine, signal });
       const home = join(homeRoot, 'worker-homes', scope.kind, scope.id);
       mkdirSync(home, { recursive: true });
-      const caps = capabilities ?? await probeCapabilities({ engines: [] });
+      const caps = capabilities ?? await (probed ||= probeCapabilities(probe ? {} : { engines: [] }));
       const w = startWorker({ url: controllerUrl, token, scope, workerId, home, capabilities: caps, idleMs, log });
       const handle = { workerId, scopeKey, engine, home, worker: w, done: w.done, own: true };   // cannot outlive this process: never an orphan
       workers.set(workerId, handle);

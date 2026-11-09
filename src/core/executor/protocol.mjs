@@ -7,7 +7,7 @@
 //   worker -> controller                       controller -> worker
 //   hello {apiVersion, workerId, scope, pid,   welcome {controllerBootId, pingMs, idleMs}
 //          capabilities}                       refuse {reason}            (then the socket closes)
-//   started {id, pid}                          exec {id, file, args, cwd, env, stdin, detached}
+//   started {id, pid}                          exec {id, file, args, cwd, env, stdin, detached, reap?, withheld?}
 //   spawn-error {id, code, message}            ack {id, seq}              (flow control, every N out frames)
 //   out {id, seq, stream, lines[]}             signal {id, sig}
 //   exit {id, code, signal}                    shutdown {graceMs}
@@ -32,6 +32,9 @@ export const ACK_EVERY = 16;
 /** Lines per out frame and the flush interval that bound how long a line waits in the worker. */
 export const OUT_BATCH_LINES = 64;
 export const OUT_FLUSH_MS = 20;
+
+/** Most names an exec frame's `withheld` list may carry. */
+export const MAX_WITHHELD = 4096;
 
 export const SIGNALS = Object.freeze(['SIGTERM', 'SIGKILL', 'SIGINT']);
 export const STREAMS = Object.freeze(['out', 'err']);
@@ -72,7 +75,10 @@ export function isValidExecSpec(f) {
     && (f.stdin === null || typeof f.stdin === 'string')
     && (f.detached === undefined || typeof f.detached === 'boolean')
     // `reap`: when the process ends, whatever it left running in its group is killed too (an engine's step, as locally).
-    && (f.reap === undefined || typeof f.reap === 'boolean');
+    && (f.reap === undefined || typeof f.reap === 'boolean')
+    // `withheld`: names the controller deliberately left out of `env` (an env scrub, the broker): the worker never
+    // fills them in from its own environment.
+    && (f.withheld === undefined || (Array.isArray(f.withheld) && f.withheld.length <= MAX_WITHHELD && f.withheld.every((n) => str(n, 256))));
 }
 
 /** Structural check of any protocol frame (either direction). */

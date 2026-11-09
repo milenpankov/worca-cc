@@ -76,22 +76,10 @@ fi
 # 5. Corporate CA (shared with the controller's entrypoint).
 worca_corporate_ca
 
-# 6. Say what this worker carries (never the token, never the controller URL's credentials).
+# 6. Say what this worker is for (never the token, never the controller URL's credentials). Which engine binaries
+#    it carries, and their versions, is the worker's own first log line: it probes them once for its hello.
 if [ "$worker_cmd" = 1 ]; then
-  engine="${WORCA_WORKER_ENGINE:-?}"
-  ver=""
-  case "$engine" in
-    claude)   ver="$(claude --version 2>/dev/null | head -n 1 || true)" ;;
-    codex)    ver="$(codex --version 2>/dev/null | head -n 1 || true)" ;;
-    copilot)  ver="$(copilot --version 2>/dev/null | head -n 1 || true)" ;;
-    cursor)   ver="$(cursor-agent --version 2>/dev/null | head -n 1 || true)" ;;
-    gemini)   ver="$(gemini --version 2>/dev/null | head -n 1 || true)" ;;
-    qwen)     ver="$(qwen --version 2>/dev/null | head -n 1 || true)" ;;
-    goose)    ver="$(goose --version 2>/dev/null | head -n 1 || true)" ;;
-    opencode) ver="$(opencode --version 2>/dev/null | head -n 1 || true)" ;;
-    all)      ver="every engine (worca worker --check lists them)" ;;
-  esac
-  log "engine ${engine}${ver:+ (${ver})}; scope ${WORCA_WORKER_SCOPE}; worker ${WORCA_WORKER_ID}; HOME ${HOME}"
+  log "engine ${WORCA_WORKER_ENGINE:-?}; scope ${WORCA_WORKER_SCOPE}; worker ${WORCA_WORKER_ID}; HOME ${HOME}"
 fi
 
 exec "$@"

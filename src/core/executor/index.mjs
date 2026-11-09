@@ -10,7 +10,7 @@
 // spawn — the argv, the env, the cwd, line framing, abort escalation, classification — is
 // unchanged. See docs/workers.md.
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { readdirSync, rmSync, statSync } from 'node:fs';
 import { worcaHome } from '../projects.mjs';
 import { currentExecutorScope, normalizeScope } from './scope.mjs';
@@ -101,6 +101,13 @@ export function sweepStaged({ before = Date.now() - Math.round(process.uptime() 
 export function workerHomeDir(scope, home = worcaHome()) {
   const s = normalizeScope(scope);
   return s ? join(home, 'worker-homes', s.kind, s.id) : null;
+}
+
+/** The HOME the spawn in this async context runs with: its worker's (on the shared volume, so this process reads what
+ *  the engine wrote there), else this process's own. */
+export function spawnHomeDir() {
+  const scope = installed ? currentExecutorScope() : null;
+  return (scope && workerHomeDir(scope)) || homedir();
 }
 
 /** Remove a scope's worker HOME. Best effort; never throws. */

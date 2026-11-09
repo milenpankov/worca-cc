@@ -24,6 +24,16 @@ export const WORKER_RELAY_PORT = Number(process.env.WORCA_WORKER_RELAY_PORT) > 0
 
 /** The worker registry under a remote executor (src/core/executor/registry.mjs), else null. */
 let WORKERS = null;
+/** Workers are other containers (each runs the relay shim on its own loopback); false under the in-process backend. */
+let WORKERS_ELSEWHERE = false;
+
+/**
+ * Where a chat turn's MCP child posts its lines: the relay shim on its worker's loopback, or — no workers, or workers
+ * inside this process — this server's own route on `port`.
+ */
+export function askRelayUrl(port) {
+  return `http://127.0.0.1:${WORKERS && WORKERS_ELSEWHERE ? WORKER_RELAY_PORT : port}/api/ask/relay`;
+}
 /** The UI server's live chat relays (token -> the turn's entry), bound once at module load. */
 let askRelays = null;
 
@@ -78,6 +88,7 @@ export async function installExecutorFromEnv({ log = (l) => console.log(l), port
   });
   await registry.listen();
   WORKERS = registry;
+  WORKERS_ELSEWHERE = !inProcess;
   installExecutor({ kind, registry });
   log(`[worca-ui] executor: ${kind} (${backend.describe?.()?.kind || kind}); workers connect to ${registry.controllerUrl}, up to ${registry.describe().maxWorkers} at once`);
   if (readEgressPolicy(process.env).enforced) log('[worca-ui] executor: the outbound network policy proxy runs in this process and does not reach workers; use the egress sidecar (docker/compose.egress.yml) or a cluster network policy');

@@ -66,7 +66,7 @@ gets one worker per image, and they end together.
 | Variable | Where | Meaning |
 | --- | --- | --- |
 | `WORCA_EXECUTOR` | controller | `local` (default), `docker`, `kubernetes` |
-| `WORCA_EXECUTOR_BACKEND=in-process` | controller | the worker runs inside the server process over a real socket, no container: for trying the path on one machine, and for tests |
+| `WORCA_EXECUTOR_BACKEND=in-process` | controller | the worker runs inside the server process over a real socket, no container, with the engines installed on this machine: for trying the path on one machine, and for tests |
 | `WORCA_WORKER_PORT` | controller | the worker listener (default 4319); never publish it to people |
 | `WORCA_CONTROLLER_URL` | controller | the URL workers are told to connect to (`ws://<service>:4319`). **Required** with `docker` and `kubernetes` (the Compose overlay and the chart set it): a worker in another container cannot dial the controller's loopback, and the server refuses to start without it |
 | `WORCA_WORKER_MAX` | controller | how many scopes may hold workers at once (default 20); runs are also bounded by Settings › Runs. A run's second worker (a helper job on another engine's image) never waits for the cap. When it is reached, an idle chat worker gives way; otherwise the newcomer waits `WORCA_WORKER_CAP_WAIT_MS` (10 min) and then fails as a start failure, which the run's failure policy pauses or retries |
@@ -110,9 +110,12 @@ an agent on a worker:
   `COPILOT_*`, `CURSOR_*`, `GOOSE_*`, `DASHSCOPE_*`, `OPENROUTER_*`, plus any name listed in
   `WORCA_WORKER_PASS_ENV` — when the controller sent none of that name (the controller's wins).
   Never `WORCA_*`, and never a Git host's token under any name (`GH_*`, `GITHUB_*`, `GITLAB_*`,
-  `BITBUCKET_*`, `AZURE_DEVOPS_*`): agents get no Git credential. A guardrail
-  set that scrubs the environment scrubs what the controller sends, not these: a key agents must
-  not be able to read belongs in the [credential broker](credential-broker.md).
+  `BITBUCKET_*`, `AZURE_DEVOPS_*`): agents get no Git credential. A variable the controller
+  holds itself and left out of a spawn on purpose is never filled in from the worker's copy: a
+  guardrail set that scrubs the environment stays scrubbed when the same Secret feeds both, and
+  with the credential broker on no model credential is added at all. A key that only the worker
+  holds is outside the scrub: one agents must not be able to read belongs in the
+  [credential broker](credential-broker.md).
 
 What that means per engine:
 
@@ -175,7 +178,9 @@ is not implemented.
   sign-in at run start and before a chat turn, a Python interpreter for a python script node — is not checked on
   the controller for anything that runs on a worker image (Claude Code, which the controller has, stays checked).
   A worker that lacks the engine refuses the spawn with the image setting to fix; a missing interpreter fails the
-  script's spawn.
+  script's spawn. A chat on Codex, Copilot, Gemini CLI, Qwen Code, Goose or OpenCode is refused the same way when
+  the worker image's CLI is older than the version that engine's chat lockdown needs (the worker reports its
+  versions when it connects).
 - **Your user-scope Claude Code setup is not on a worker.** An agent's HOME there is a fresh worker home with
   a copied login and `settings.json`: skills, `CLAUDE.md`, agents, commands and MCP servers you keep under
   `~/.claude` (the controller's volume on Compose) are not read, exactly as with agent users on one machine.

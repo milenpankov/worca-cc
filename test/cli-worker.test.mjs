@@ -266,3 +266,40 @@ test('a spawn error with a message longer than a frame allows is reported, not t
   assert.ok(err, JSON.stringify(frames.map((f) => f.type)));
   assert.ok(err.message.length <= 4000);
 });
+
+import { cutPoint, piecesOf } from '../src/worker/exec.mjs';
+
+test("a worker never puts back a variable the controller left out on purpose", () => {
+  const workerEnv = { PATH: '/usr/bin', OPENAI_API_KEY: 'sk-worker', ANTHROPIC_API_KEY: 'sk-ant-worker', GEMINI_API_KEY: 'g-worker' };
+  const sent = { PATH: '/bin', ANTHROPIC_API_KEY: 'sk-ant-controller' };
+  const plain = childEnv(sent, { home: '/h', workerEnv, exists: () => true });
+  assert.equal(plain.OPENAI_API_KEY, 'sk-worker', 'nothing withheld: the worker\'s own credential reaches the engine');
+  assert.equal(plain.ANTHROPIC_API_KEY, 'sk-ant-controller', "the controller's value wins");
+  // The run's env scrub removed OPENAI_API_KEY (the controller holds it too): the worker's copy must not undo that.
+  const scrubbed = childEnv(sent, { home: '/h', workerEnv, exists: () => true, withheld: ['OPENAI_API_KEY', 'LANG'] });
+  assert.equal('OPENAI_API_KEY' in scrubbed, false);
+  assert.equal(scrubbed.GEMINI_API_KEY, 'g-worker', 'a name nobody removed is still the worker\'s to add');
+  assert.equal(childEnv(sent, { home: '/h', workerEnv, exists: () => true, withheld: 'OPENAI_API_KEY' }).OPENAI_API_KEY, 'sk-worker', 'a malformed list is no list');
+});
+
+test('a long line is never cut between the two halves of a surrogate pair', () => {
+  const face = '\u{1F600}';   // two UTF-16 units
+  assert.equal(cutPoint('abcd', 2), 2);
+  assert.equal(cutPoint('ab', 5), 2, 'shorter than the cut: all of it');
+  assert.equal(cutPoint(`a${face}b`, 2), 1, 'the cut would fall inside the pair: one earlier');
+  assert.equal(cutPoint(`a${face}b`, 3), 3, 'after the pair');
+  assert.equal(cutPoint(face, 1), 1, 'a piece is never empty');
+  const line = `${'x'.repeat(7)}${face}${'y'.repeat(6)}${face}`;
+  for (const size of [1, 2, 3, 4, 8, 9, 100]) {
+    const pieces = piecesOf(line, size);
+    assert.equal(pieces.join(''), line, `size ${size}: nothing lost`);
+    if (size > 1) for (const piece of pieces) assert.equal(Buffer.from(piece, 'utf8').toString('utf8'), piece, `size ${size}: every piece encodes on its own`);
+  }
+  // The splitter's own cut of a stream with no newline obeys the same rule.
+  const got = [];
+  const s = lineSplitter((text, more) => got.push([text, more]), { maxPartial: 8 });
+  s.write(Buffer.from(line, 'utf8')); s.end();
+  assert.equal(got.map(([t]) => t).join(''), line);
+  for (const [t] of got) assert.equal(Buffer.from(t, 'utf8').toString('utf8'), t);
+  assert.deepEqual(got.map(([, more]) => more).slice(-1), [false], 'the last piece ends the line');
+});

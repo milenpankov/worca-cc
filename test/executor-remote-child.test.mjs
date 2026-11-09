@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
-import { createRemoteChild, WORKER_LOST } from '../src/core/executor/remote-child.mjs';
+import { createRemoteChild, withheldNames, WORKER_LOST } from '../src/core/executor/remote-child.mjs';
 
 /** A session that records the exec and hands the test its handlers. */
 function fakeSession() {
@@ -17,8 +17,8 @@ const lines = (stream) => { const out = []; createInterface({ input: stream }).o
 
 test('the exec frame carries file/args/cwd/env/stdin; stdin on the child is a stub', () => {
   const s = fakeSession();
-  const child = createRemoteChild(s, spec);
-  assert.deepEqual(s.specs, [{ file: 'claude', args: ['-p'], cwd: '/w', env: { PATH: '/bin' }, stdin: 'hello', detached: true, reap: false }]);
+  const child = createRemoteChild(s, { ...spec, controllerEnv: { PATH: '/usr/bin', OPENAI_API_KEY: 'sk-held-here', EMPTY: '' } });
+  assert.deepEqual(s.specs, [{ file: 'claude', args: ['-p'], cwd: '/w', env: { PATH: '/bin' }, stdin: 'hello', detached: true, reap: false, withheld: ['OPENAI_API_KEY'] }]);
   createRemoteChild(s, { ...spec, reap: true });
   assert.equal(s.specs[1].reap, true, "an engine's spawn asks the worker to reap its process group at the end");
   assert.equal(child.remote, true);
@@ -133,4 +133,17 @@ test('close still fires when nobody consumes the streams (after the drain grace)
   const started = Date.now();
   await once(child, 'close');
   assert.ok(Date.now() - started < 5000);
+});
+
+test('withheldNames: what the controller holds and did not send, and every model credential when the broker is on', () => {
+  const controller = { PATH: '/usr/bin', LANG: 'C', OPENAI_API_KEY: 'sk-1', GH_TOKEN: 'ghp', ANTHROPIC_API_KEY: 'sk-ant', UNSET_BY_COMPOSE: '' };
+  // An env scrub kept PATH and the engine's own names only: the rest was left out on purpose.
+  assert.deepEqual(withheldNames({ PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant' }, controller).sort(), ['GH_TOKEN', 'LANG', 'OPENAI_API_KEY']);
+  assert.deepEqual(withheldNames({ ...controller }, controller), [], 'nothing removed: the worker may add what the controller never held');
+  assert.deepEqual(withheldNames(null, { A: '1' }), ['A']);
+  // With the broker on an agent holds the broker's token only, whether or not the controller ever held a key.
+  const brokered = withheldNames({ PATH: '/usr/bin', ANTHROPIC_AUTH_TOKEN: 'broker-token' }, { PATH: '/usr/bin', WORCA_BROKER_URL: 'http://broker:8080' });
+  assert.ok(brokered.includes('ANTHROPIC_API_KEY') && brokered.includes('CLAUDE_CODE_OAUTH_TOKEN') && brokered.includes('OPENAI_API_KEY'));
+  assert.ok(!brokered.includes('ANTHROPIC_AUTH_TOKEN'), 'the token the spawn was given is not withheld');
+  assert.ok(!withheldNames({ PATH: '/usr/bin' }, { PATH: '/usr/bin' }).includes('ANTHROPIC_API_KEY'), 'no broker: a worker-held key is the worker\'s to add');
 });

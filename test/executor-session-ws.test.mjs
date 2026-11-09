@@ -446,6 +446,26 @@ test('a scope released, or a registry closed, while an acquire is still working 
   } finally { await reg2.closeAll(); }
 });
 
+test('thousands of other scopes ending never disturb an acquire in flight, and never start a worker for a released one', async () => {
+  let open; const gate = new Promise((r) => { open = r; });
+  const started = [];
+  const b = { async classFor() { await gate; return 'img'; }, start(o) { started.push(o.scopeKey); return new Promise(() => {}); }, async remove() {}, async listWorkers() { return []; }, describe() { return {}; } };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, log: () => {} });
+  await reg2.listen();
+  try {
+    const kept = { kind: 'run', id: 'kept' }; const ended = { kind: 'run', id: 'ended' };
+    const a = reg2.acquire(kept, { engine: 'claude' }).then(() => null, (e) => e);
+    const z = reg2.acquire(ended, { engine: 'claude' }).then(() => null, (e) => e);
+    await reg2.release(ended, { reason: 'done' });
+    for (let i = 0; i < 6000; i++) await reg2.release({ kind: 'chat', id: `t${i}` }, { reason: 'idle' });   // a busy day of chats ending
+    open();
+    assert.match((await z).message, /the worker for run:ended was released while this spawn was starting/, 'its release is still remembered');
+    for (let i = 0; i < 100 && !started.length; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(started, ['run:kept'], 'the untouched scope got its worker');
+    await reg2.release(kept, { reason: 'test' }); await a;
+  } finally { await reg2.closeAll(); }
+});
+
 test('a worker that exits before it connects fails the start at once with its reason, not after the whole timeout', async () => {
   let exited = false; const removed = [];
   const b = {

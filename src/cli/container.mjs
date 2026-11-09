@@ -31,11 +31,11 @@ export const WORKER_INSTANCE_LABEL = INSTANCE_LABEL;      // …and which instal
 
 /**
  * The installation name the docker backend labels this stack's workers with (docker.mjs): WORCA_INSTANCE_ID when
- * the operator set one (compose.workers.yml hands it to the controller), else the Compose project — which Compose
- * takes from the process environment first, then from `.env`, then from compose.yml's `name: worca`.
+ * the operator set one (compose.workers.yml hands it to the controller), else the Compose project. Each is read the
+ * way Compose reads it: the process environment first, then `.env`; the project falls back to compose.yml's `name: worca`.
  */
 export function workerInstanceOf({ dotEnv = () => null, env = {} } = {}) {
-  return dotEnv('WORCA_INSTANCE_ID') || env.WORCA_INSTANCE_ID || env.COMPOSE_PROJECT_NAME || dotEnv('COMPOSE_PROJECT_NAME') || 'worca';
+  return env.WORCA_INSTANCE_ID || dotEnv('WORCA_INSTANCE_ID') || env.COMPOSE_PROJECT_NAME || dotEnv('COMPOSE_PROJECT_NAME') || 'worca';
 }
 
 /**
@@ -96,7 +96,7 @@ path as on the host (WORCA_PROJECTS in .env), so run worktrees stay valid here.
 `;
 
 /** Default exec: run and inherit the terminal. Returns { status }. */
-function defaultExec(cmd, args, { cwd, capture = false, env } = {}) {
+export function defaultExec(cmd, args, { cwd, capture = false, env } = {}) {
   const r = spawnSync(cmd, args, { cwd, env, stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit', encoding: 'utf8' });
   return { status: r.error ? 127 : (r.status ?? 1), stdout: r.stdout || '', stderr: r.stderr || '' };
 }
@@ -364,11 +364,11 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
       // Worker containers (compose.workers.yml) are started by the controller, not by compose, so
       // `down` does not know them: whatever is left is removed by its label. Best effort.
       // Only this installation's: another worca stack on the same host keeps its workers.
-      const instance = workerInstanceOf({ dotEnv: (name) => readEnvValue(dir, name), env: composeEnv ?? process.env });
-      const ps = exec(rt.bin, ['ps', '-aq', '--filter', `label=${WORKER_INSTANCE_LABEL}=${instance}`], { cwd: dir, env: composeEnv, stdio: ['ignore', 'pipe', 'ignore'] });
+      const instance = workerInstanceOf({ dotEnv: (name) => readEnvValue(dir, name), env: composeEnv ?? hostEnv });
+      const ps = exec(rt.bin, ['ps', '-aq', '--filter', `label=${WORKER_INSTANCE_LABEL}=${instance}`], { cwd: dir, env: composeEnv, capture: true });
       const ids = String(ps.stdout || '').split(/\s+/).filter(Boolean);
       if (ids.length) {
-        exec(rt.bin, ['rm', '-f', ...ids], { cwd: dir, env: composeEnv, stdio: 'ignore' });
+        exec(rt.bin, ['rm', '-f', ...ids], { cwd: dir, env: composeEnv, capture: true });
         out(`removed ${ids.length} worker container(s)`);
       }
       return code;
@@ -380,12 +380,12 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
       // Worker images are started by the controller, not by compose, so `compose pull` does not know them: a stale
       // one under a moving tag would run against the new controller. Every worker image of this tag that is here
       // is pulled too.
-      const glob = workerImageGlob({ dotEnv: (name) => readEnvValue(dir, name), env: composeEnv ?? process.env });
+      const glob = workerImageGlob({ dotEnv: (name) => readEnvValue(dir, name), env: composeEnv ?? hostEnv });
       if (overlays.includes('workers') && glob) {
-        const ls = exec(rt.bin, ['images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', `reference=${glob}`], { cwd: dir, env: composeEnv, stdio: ['ignore', 'pipe', 'ignore'] });
+        const ls = exec(rt.bin, ['images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', `reference=${glob}`], { cwd: dir, env: composeEnv, capture: true });
         const images = [...new Set(String(ls.stdout || '').split(/\s+/).filter((i) => i && !i.endsWith(':<none>')))];
         if (!images.length) out(`no worker image here yet: pull the one for your engine, e.g. ${glob.replace('*', 'claude')}`);
-        for (const image of images) exec(rt.bin, ['pull', image], { cwd: dir, env: composeEnv, stdio: 'inherit' });
+        for (const image of images) exec(rt.bin, ['pull', image], { cwd: dir, env: composeEnv });
       }
       return code;
     }

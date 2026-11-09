@@ -12,7 +12,7 @@ import { createInProcessBackend } from './in-process.mjs';
  *  the controller process that started it. */
 export async function createBackend(kind, { env = process.env, log = () => {}, homeRoot, bootId } = {}) {
   const override = String(env.WORCA_EXECUTOR_BACKEND || '').trim().toLowerCase();
-  if (override === 'in-process') return createInProcessBackend({ homeRoot, log });
+  if (override === 'in-process') return createInProcessBackend({ homeRoot, log, probe: true });
   if (override) throw new Error(`WORCA_EXECUTOR_BACKEND=${override} is not a backend (in-process is the only override)`);
   if (kind === 'docker') {
     const mod = await import('./docker.mjs').catch(() => null);

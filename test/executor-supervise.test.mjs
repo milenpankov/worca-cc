@@ -8,10 +8,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { useTempHome } from './helpers/temp-home.mjs';
 import { createLoopbackRegistry, createLoopbackSession } from './helpers/loopback-worker-session.mjs';
-import { superviseSpawn, missingOnWorker, engineOfSpawn, guardPid } from '../src/core/engines/spawn.mjs';
+import { superviseSpawn, missingOnWorker, tooOldOnWorker, olderThan, engineOfSpawn, guardPid } from '../src/core/engines/spawn.mjs';
 import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
-import { installExecutorFromEnv, keepsWorkerHome, reapWorkersAtBoot } from '../src/core/executor/controller.mjs';
-import { releaseWorker, workerHomeDir } from '../src/core/executor/index.mjs';
+import { installExecutorFromEnv, keepsWorkerHome, reapWorkersAtBoot, askRelayUrl, WORKER_RELAY_PORT } from '../src/core/executor/controller.mjs';
+import { releaseWorker, workerHomeDir, spawnHomeDir } from '../src/core/executor/index.mjs';
+import { createBackend } from '../src/core/executor/backends/index.mjs';
+import { createWorkerRegistry } from '../src/core/executor/registry.mjs';
+import { homedir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { scriptSpawnError } from '../src/core/graph/script-runner.mjs';
 import { overlayEnv, workerInstanceOf, workerImageGlob } from '../src/cli/container.mjs';
 import { FULL_VARIANT_ENGINES, fullVariantEngines } from '../src/core/executor/shared.mjs';
@@ -181,6 +185,9 @@ test("a chat's worker HOME goes with its thread, whichever way the thread went",
     const threadOf = (id) => { if (id === 'unknown') throw new Error('db busy'); return id === 'alive' ? { id } : null; };
     await reapWorkersAtBoot({ rowOf: () => null, threadOf, log: () => {}, error: () => {} });
     assert.deepEqual(['alive', 'orphan', 'unknown'].map((id) => existsSync(workerHomeDir({ kind: 'chat', id }))), [true, false, true], 'never deleted on doubt');
+    // Workers inside this process run no relay shim: a chat's MCP child posts to this server's own route.
+    assert.notEqual(WORKER_RELAY_PORT, 4999);
+    assert.equal(askRelayUrl(4999), 'http://127.0.0.1:4999/api/ask/relay');
   } finally {
     await registry.closeAll('test over'); installExecutor(null);
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
@@ -203,6 +210,7 @@ test('`container down` names the installation the way the backend labelled its w
   assert.equal(workerInstanceOf({ dotEnv: dot({ COMPOSE_PROJECT_NAME: 'b' }), env: {} }), 'b', 'a project named in .env: Compose reads it there, so the backend labels with it');
   assert.equal(workerInstanceOf({ dotEnv: dot({ COMPOSE_PROJECT_NAME: 'b' }), env: { COMPOSE_PROJECT_NAME: 'shell' } }), 'shell', 'the process environment wins over .env, as in Compose');
   assert.equal(workerInstanceOf({ dotEnv: dot({ WORCA_INSTANCE_ID: 'team-a', COMPOSE_PROJECT_NAME: 'b' }), env: {} }), 'team-a', 'an explicit instance id wins (the overlay hands it to the controller)');
+  assert.equal(workerInstanceOf({ dotEnv: dot({ WORCA_INSTANCE_ID: 'from-file' }), env: { WORCA_INSTANCE_ID: 'from-shell' } }), 'from-shell', 'the shell wins over .env for the instance id too: Compose hands the controller that one');
   assert.deepEqual(fullVariantEngines({}), [...FULL_VARIANT_ENGINES]);
   assert.deepEqual(fullVariantEngines({ WORCA_WORKER_FULL_ENGINES: 'claude, codex' }), ['claude', 'codex']);
 });
@@ -402,4 +410,56 @@ test('spawnScript without a scope is unchanged (local child, registry untouched)
   assert.equal(r.exitCode, 0);
   assert.deepEqual(registry.acquired, []);
   assert.equal(existsSync(join(worcaHome(), 'tmp', 'stage')), false, 'nothing staged under the home');
+});
+
+test("a chat's engine on a worker is held to the version its lockdown needs", POSIX, async () => {
+  assert.equal(olderThan('codex-cli 0.150.2', '0.162'), true);
+  assert.equal(olderThan('codex-cli 0.162.0', '0.162'), false);
+  assert.equal(olderThan('1.20.0 (opencode)', '1.19.4'), false);
+  assert.equal(olderThan('1.19.3', '1.19.4'), true);
+  assert.equal(olderThan('2.0.0', '1.19.4'), false);
+  assert.equal(olderThan(null, '1.0.0'), false, 'a version that could not be read is not judged');
+  assert.equal(olderThan('dev build', '1.0.0'), false);
+  const caps = { engines: { codex: { bin: '/usr/local/bin/codex', version: 'codex-cli 0.150.2' }, claude: { bin: '/usr/local/bin/claude', version: null } } };
+  const s = { workerId: 'w-old', capabilities: caps };
+  assert.match(tooOldOnWorker(s, 'codex', '0.162'), /worker w-old has codex codex-cli 0\.150\.2: a chat needs 0\.162 or newer\. Point the codex worker image at a newer one: WORCA_WORKER_IMAGE \(Compose\) or worker\.engines\.codex\.image \(Helm\)/);
+  assert.equal(tooOldOnWorker(s, 'codex', '0.150'), null);
+  assert.equal(tooOldOnWorker(s, 'codex', null), null, 'a run step names no floor');
+  assert.equal(tooOldOnWorker(s, 'claude', '9.0.0'), null, 'unknown version');
+  assert.equal(tooOldOnWorker({ workerId: 'w', capabilities: null }, 'codex', '0.162'), null);
+  // Through the seam: refused before any exec, as a setup problem (the run or turn pauses with the reason).
+  const session = createLoopbackSession({ workerId: 'w-old', capabilities: caps });
+  const registry = createLoopbackRegistry({ session });
+  let cleaned = 0;
+  await assert.rejects(
+    () => remote(registry, () => superviseSpawn(base({ file: 'codex', args: ['exec'], displayBin: 'codex', workerMinVersion: '0.162', cleanup: () => { cleaned++; } }))),
+    (err) => { assert.match(err.message, /Failed to spawn codex: worker w-old has codex codex-cli 0\.150\.2/); assert.deepEqual([err.code, err.errorClass], ['EWORKEROLDBIN', 'auth']); return true; });
+  assert.deepEqual([cleaned, session.specs.length], [1, 0]);
+  // Every engine that can run a chat hands its floor to the seam (the controller's own check is skipped under workers).
+  const src = (f) => readFileSync(new URL(`../src/core/engines/${f}.mjs`, import.meta.url), 'utf8');
+  for (const [f, re] of [['codex', /askLockdown \? \{ workerMinVersion: CODEX_ASK_MIN_VERSION \}/], ['copilot', /askLockdown \? \{ workerMinVersion: COPILOT_ASK_MIN_VERSION \}/],
+    ['goose', /ask \? \{ workerMinVersion: GOOSE_ASK_MIN_VERSION \}/], ['opencode', /ask \? \{ workerMinVersion: OPENCODE_ASK_MIN_VERSION \}/],
+    ['gemini-family', /ask && spec\.askMinVersion \? \{ workerMinVersion: spec\.askMinVersion \}/], ['gemini', /askMinVersion: GEMINI_ASK_MIN_VERSION/], ['qwen', /askMinVersion: QWEN_ASK_MIN_VERSION/]]) {
+    assert.match(src(f), re, f);
+  }
+});
+
+test("a spawn's HOME is its worker's when it runs on one; the in-process backend reports this machine's engines", async () => {
+  assert.equal(spawnHomeDir(), homedir(), 'no executor: this process');
+  const session = createLoopbackSession({ workerId: 'w-home' });
+  installExecutor({ kind: 'docker', registry: createLoopbackRegistry({ session }) });
+  try {
+    assert.equal(spawnHomeDir(), homedir(), 'no scope: the spawn stays here');
+    const scope = { kind: 'run', id: 'r-home' };
+    assert.equal(withExecutorScope(scope, () => spawnHomeDir()), workerHomeDir(scope), "codex's sessions are read where the worker's codex wrote them");
+  } finally { installExecutor(null); }
+  // WORCA_EXECUTOR_BACKEND=in-process is a real mode ("try the path on one machine"): its worker must say which
+  // engines are here, or every engine spawn would be refused as missing from the image.
+  const backend = await createBackend('docker', { env: { WORCA_EXECUTOR_BACKEND: 'in-process' }, homeRoot: worcaHome() });
+  const reg = createWorkerRegistry({ backend, host: '127.0.0.1', port: 0, log: () => {} });
+  await reg.listen();
+  try {
+    const s = await reg.acquire({ kind: 'run', id: 'r-probe' });
+    assert.ok(Object.keys(s.capabilities.engines).includes('claude'), 'every engine worca knows was looked for');
+  } finally { await reg.closeAll('test over'); }
 });

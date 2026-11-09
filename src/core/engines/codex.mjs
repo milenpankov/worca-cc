@@ -26,6 +26,7 @@ import { worcaHome } from '../projects.mjs';
 import { hostGuardEnabled, hostGuardSystemPrompt } from '../host-guard.mjs';
 import { CAPABILITY_KEYS, describeUnattachableMcp } from './capabilities.mjs';
 import { superviseSpawn, guardPid, composeSpawnEnv, cleanRunEnv, safeEmit, writableRootsInWorcaHome } from './spawn.mjs';
+import { spawnHomeDir } from '../executor/index.mjs';
 import { createRedactor } from '../redact.mjs';
 import { strongestClass } from '../recoverable-error.mjs';
 import { ARGV_INLINE_LIMIT } from './claude.mjs';
@@ -839,7 +840,9 @@ export async function runCodexProcess({
   if (typeof runSpawnEnv?.GIT_CEILING_DIRECTORIES === 'string') env.GIT_CEILING_DIRECTORIES = runSpawnEnv.GIT_CEILING_DIRECTORIES;
   // Command rules live in a worca-managed CODEX_HOME.
   if (plan.prefixes.length) env.CODEX_HOME = guardedCodexHome(codexRulesFile(plan.prefixes));
-  const home = (env.CODEX_HOME && String(env.CODEX_HOME).trim()) || join(homedir(), '.codex');
+  // On a worker codex's HOME is the worker's (executor/index.mjs spawnHomeDir), not this process's: the thread is
+  // brought there and its session file (the usage of a turn that never completed) is read from there.
+  const home = (env.CODEX_HOME && String(env.CODEX_HOME).trim()) || join(spawnHomeDir(), '.codex');
   if (thread) bringCodexThreadHome(home, thread);
   const extra = [];
   if (plan.shellOff && sandbox !== 'read-only' && !askLockdown) extra.push(...CODEX_SHELL_OFF);
@@ -893,6 +896,7 @@ export async function runCodexProcess({
   const res = await superviseSpawn({
     cli: CODEX_CLI,
     file: bin, args, displayBin: bin, cwd, env, stdin, signal: spawnSignal, asAgent, stagedDir: null, onEvent,
+    ...(askLockdown ? { workerMinVersion: CODEX_ASK_MIN_VERSION } : {}),
     cleanup: () => { if (roleFile) rmSync(roleFile, { force: true }); },
     stdoutErrorDetail: () => normalizer.finish().error || '',
     classify: (m) => classifyCodexError(m),

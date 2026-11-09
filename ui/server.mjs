@@ -263,7 +263,7 @@ import {
 } from '../src/core/platform-heartbeat.mjs';
 import { freeDailyStatus } from '../src/core/openrouter-free.mjs';
 import { checkBrokerAtBoot } from '../src/core/broker-boot.mjs';
-import { installExecutorFromEnv, relayAskLine, workersHealth, reapWorkersAtBoot, closeWorkers, bindAskRelays, isRemoteExecutor, releaseWorker, touchWorker, withExecutorScope, bridgedModelRefusal, WORKER_RELAY_PORT } from '../src/core/executor/controller.mjs';   // worker containers (docs/workers.md)
+import { installExecutorFromEnv, relayAskLine, workersHealth, reapWorkersAtBoot, closeWorkers, bindAskRelays, isRemoteExecutor, releaseWorker, touchWorker, withExecutorScope, bridgedModelRefusal, askRelayUrl } from '../src/core/executor/controller.mjs';   // worker containers (docs/workers.md)
 import { modelSlot, missingCredentials, describeMissing, workflowNeedsModel } from '../src/core/broker-routing.mjs';
 import { syncPluginSlots } from '../src/core/plugin-broker-slots.mjs';
 import { planClone, cloneProject, CloneError } from '../src/core/clone-project.mjs';
@@ -7757,8 +7757,7 @@ function askAgentRelay({ threadId, reader, web = null, engine = 'claude', model 
   });
   askRelays.set(token, entry);
   const port = server.address()?.port || PORT;
-  const url = isRemoteExecutor() ? `http://127.0.0.1:${WORKER_RELAY_PORT}/api/ask/relay` : `http://127.0.0.1:${port}/api/ask/relay`;
-  return { url, token, dispose: () => { life.abort(); askRelays.delete(token); } };
+  return { url: askRelayUrl(port), token, dispose: () => { life.abort(); askRelays.delete(token); } };
 }
 
 /**

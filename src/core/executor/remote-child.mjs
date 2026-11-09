@@ -7,6 +7,8 @@
 // `remote` flag, which routes their tree signals through the session instead of `-pid`.
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { MODEL_CREDENTIAL_ENV_KEYS } from '../broker-guard.mjs';
+import { MAX_WITHHELD } from './protocol.mjs';
 
 /** Why an exec ended without an exit: the worker went away. Classified as a network failure
  *  so the harness's failure policy retries it, on a fresh worker. */
@@ -17,12 +19,26 @@ export const WORKER_LOST = 'EWORKERLOST';
 const DRAIN_GRACE_MS = 2000;
 
 /**
+ * The names the controller deliberately left out of a spawn's env: every variable it holds itself that the composed
+ * env lacks (an env-scrub guardrail, a stripped Git or broker credential), and — with the credential broker on — every
+ * model credential the env lacks (agents hold the broker's token only). A worker never fills these in from its own
+ * environment (worker/exec.mjs childEnv); what the controller never held and no rule removes is the worker's to add.
+ */
+export function withheldNames(env, controllerEnv = process.env) {
+  const sent = env || {};
+  const names = Object.keys(controllerEnv).filter((k) => sent[k] === undefined && controllerEnv[k] !== undefined && controllerEnv[k] !== '');
+  const brokered = typeof controllerEnv.WORCA_BROKER_URL === 'string' && controllerEnv.WORCA_BROKER_URL.trim() !== '';
+  if (brokered) for (const k of MODEL_CREDENTIAL_ENV_KEYS) if (sent[k] === undefined && !names.includes(k)) names.push(k);
+  return names.filter((k) => k.length <= 256).slice(0, MAX_WITHHELD);
+}
+
+/**
  * @param {{ workerId: string, exec: (spec: object, handlers: object) => string, signal: (id: string, sig: string) => void }} session
  * @param {{ file: string, args: string[], cwd: string, env: Record<string,string>, stdin?: string|null, displayBin?: string, detached?: boolean }} spec
  * @returns {EventEmitter & { remote: true, id: string, pid: number|null, exitCode: number|null, signalCode: string|null,
  *   stdout: PassThrough, stderr: PassThrough, stdin: object, kill: (sig?: string) => boolean }}
  */
-export function createRemoteChild(session, { file, args, cwd, env, stdin = null, displayBin = file, detached = true, reap = false }) {
+export function createRemoteChild(session, { file, args, cwd, env, stdin = null, displayBin = file, detached = true, reap = false, controllerEnv = process.env }) {
   const child = new EventEmitter();
   child.remote = true;
   child.workerId = session.workerId;
@@ -51,7 +67,7 @@ export function createRemoteChild(session, { file, args, cwd, env, stdin = null,
     child.stderr.end();
   };
 
-  const id = session.exec({ file, args, cwd, env, stdin, detached, reap: reap === true }, {
+  const id = session.exec({ file, args, cwd, env, stdin, detached, reap: reap === true, withheld: withheldNames(env, controllerEnv) }, {
     onStarted: ({ pid }) => { child.pid = pid; child.emit('spawn'); },
     onLines: ({ stream, lines, more = false }) => {
       if (ended) return;

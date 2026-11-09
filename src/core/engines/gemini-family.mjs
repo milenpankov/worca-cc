@@ -292,7 +292,7 @@ export const foldSystemPrompt = (sys, prompt) => (sys ? `=== SYSTEM ===\n${sys}\
  *   {argsFor(session, resume), stdin, env}; spec.fatalStderrRe stops the child on a stderr line that means its rules
  *   did not load.
  * @param {object} spec {name, label, prefix, envPrefixes (a list, or a function of worca's env), classify,
- *   resumeNotFoundRe, fatalStderrRe?, fatalMessage?, askLockdown?, createNormalizer({model, mcpNames}), prepare(ctx)};
+ *   resumeNotFoundRe, fatalStderrRe?, fatalMessage?, askLockdown?, askMinVersion?, createNormalizer({model, mcpNames}), prepare(ctx)};
  *   prepare's result may carry cleanup(), run when the spawn is over
  */
 export async function runFamilyProcess(spec, {
@@ -362,6 +362,7 @@ export async function runFamilyProcess(spec, {
       safeEmit(onEvent, { type: 'session', sessionId: prefix + id });
       const res = await superviseSpawn({
         file: bin, cli: spec.cli, args: prepared.argsFor(id, resume), displayBin: bin, cwd, env, stdin: prepared.stdin, signal: spawnSignal, asAgent,
+        ...(ask && spec.askMinVersion ? { workerMinVersion: spec.askMinVersion } : {}),
         stagedDir: asAgent ? [scratch, ...(prepared.agentDirs || [])] : null, onEvent, cleanup: () => {},
         stdoutErrorDetail: () => normalizer.finish().error || '',
         classify: (m) => spec.classify(m),

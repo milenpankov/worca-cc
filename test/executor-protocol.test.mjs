@@ -78,6 +78,10 @@ test('encode refuses an invalid or oversize frame; decode returns null on garbag
   assert.equal(isValidFrame({ ...exec, cwd: '' }), false);
   assert.equal(isValidFrame({ ...exec, reap: true }), true);
   assert.equal(isValidFrame({ ...exec, reap: 1 }), false);
+  assert.equal(isValidFrame({ ...exec, withheld: ['OPENAI_API_KEY', 'LANG'] }), true, 'names the controller left out of env on purpose');
+  assert.equal(isValidFrame({ ...exec, withheld: [] }), true);
+  assert.equal(isValidFrame({ ...exec, withheld: 'OPENAI_API_KEY' }), false);
+  assert.equal(isValidFrame({ ...exec, withheld: ['ok', 7] }), false);
   const hello = { type: 'hello', apiVersion: PROTOCOL_VERSION, workerId: 'w1', scope: { kind: 'run', id: 'r1' }, pid: 42, capabilities: { ...caps, worca: '1.3.0' } };
   assert.equal(isValidFrame(hello), true, 'a worker says which worca it runs');
   assert.equal(isValidFrame({ ...hello, capabilities: { ...caps, worca: 13 } }), false);

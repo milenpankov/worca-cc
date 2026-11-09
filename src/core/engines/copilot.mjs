@@ -708,6 +708,7 @@ export async function runCopilotProcess({
   const res = await superviseSpawn({
     cli: COPILOT_CLI,
     file: bin, args, displayBin: bin, cwd, env, stdin: String(prompt ?? ''), signal: spawnSignal, asAgent,
+    ...(askLockdown ? { workerMinVersion: COPILOT_ASK_MIN_VERSION } : {}),
     // Copilot writes its usage file into the scratch folder, so an agent user gets it writable.
     stagedDir: asAgent ? { dir: scratch, writable: true } : null, onEvent,
     cleanup: () => {},

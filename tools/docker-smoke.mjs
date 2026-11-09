@@ -352,7 +352,7 @@ async function workersEndToEnd(ctrlImage, workerImg) {
     const log = `${logs.stdout}${logs.stderr}`;
     const started = new RegExp(`executor: started (worca-worker-run-${pipelineId}-\\S+) \\(${workerImg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\) for run:${pipelineId}`).exec(log);
     const removed = started && new RegExp(`executor: removed ${started[1]} \\(done\\)`).test(log);
-    const left = docker(['ps', '-aq', '--filter', 'label=worca.scope'], { allowFail: true }).stdout.trim();
+    const left = docker(['ps', '-aq', '--filter', `label=worca.instance=${ui}`], { allowFail: true }).stdout.trim();   // this smoke's own (the instance is the controller's name)
     const output = docker(['exec', ui, 'sh', '-c', `grep -rh "hello-from-" /worca/.worca-cc/store/*/pipelines/*${pipelineId}*/ 2>/dev/null | head -1`], { allowFail: true }).stdout;
     if (status !== 'done') fail(`workers: the run ended ${status}\n${log.split('\n').filter((l) => /executor|worker|error/i.test(l)).join('\n')}`);
     else if (!started) fail(`workers: the controller log shows no worker started for run:${pipelineId}\n${log.split('\n').filter((l) => /executor|workers/.test(l)).join('\n')}`);
@@ -362,7 +362,7 @@ async function workersEndToEnd(ctrlImage, workerImg) {
     else ok(`workers: run ${pipelineId} done; its script ran on ${started[1]} (${workerImg}), which was removed afterwards`);
   } finally {
     if (!a.keep) {
-      const leftovers = docker(['ps', '-aq', '--filter', 'label=worca.controller'], { allowFail: true }).stdout.trim().split(/\s+/).filter(Boolean);
+      const leftovers = docker(['ps', '-aq', '--filter', `label=worca.instance=${ui}`], { allowFail: true }).stdout.trim().split(/\s+/).filter(Boolean);   // never another worca's workers on this host
       if (leftovers.length) docker(['rm', '-f', ...leftovers], { allowFail: true });
       docker(['rm', '-f', ui], { allowFail: true });
       docker(['volume', 'rm', '-f', vol], { allowFail: true });

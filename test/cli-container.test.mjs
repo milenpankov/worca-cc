@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { useTempHome } from './helpers/temp-home.mjs';
 import { checkRows } from './helpers/rows.mjs';
 import {
-  cmdContainer, detectRuntime, commonParent, seedEnv, composeFileArgs, initDir, OVERLAYS, COMPOSE_SRC_DIR,
+  cmdContainer, detectRuntime, commonParent, seedEnv, composeFileArgs, initDir, defaultExec, OVERLAYS, COMPOSE_SRC_DIR,
 } from '../src/cli/container.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -159,4 +159,46 @@ test('the real CLI routes `worca container help` and lists the subcommand in --h
   assert.match(h.stdout, /worca container — run Worca in a container/);
   const top = await run(['--help']);
   assert.match(top.stdout, /container <cmd> \[\.\.\.\]/);
+});
+
+/** A runtime with the real exec's contract (defaultExec): what a command printed comes back only when the caller
+ *  asked to capture it. `prints(args)` is that command's output. */
+function printingExec(prints) {
+  const calls = [];
+  const exec = (cmd, args, opts = {}) => {
+    calls.push({ cmd, args, opts });
+    if (args[0] === 'compose' && args[1] === 'version') return { status: 0, stdout: '', stderr: '' };
+    if (cmd === 'git') return { status: 0, stdout: 'x\n', stderr: '' };
+    return { status: 0, stdout: opts.capture ? (prints(args) || '') : '', stderr: '' };
+  };
+  return { exec, calls };
+}
+
+test('defaultExec hands back what a command printed only when asked to capture it', () => {
+  const quiet = defaultExec(process.execPath, ['-e', 'process.stdout.write("ids")'], { capture: true });
+  assert.deepEqual([quiet.status, quiet.stdout], [0, 'ids']);
+  assert.equal(defaultExec(process.execPath, ['-e', ''], {}).stdout, '', 'inherited stdio: nothing to read');
+  assert.equal(defaultExec('worca-no-such-binary', [], { capture: true }).status, 127);
+});
+
+test("down removes this installation's leftover worker containers; pull refreshes the worker images that are here", async () => {
+  const dir = tmp();
+  try {
+    const { exec, calls } = printingExec((args) => {
+      if (args[0] === 'ps') return 'aaa111\nbbb222\n';
+      if (args[0] === 'images') return 'ghcr.io/sinishadjukic/worca-worker:latest-claude\nghcr.io/sinishadjukic/worca-worker:latest-codex\n';
+      return '';
+    });
+    const o = io();
+    const env = { PATH: process.env.PATH || '', COMPOSE_PROJECT_NAME: 'team-a' };
+    assert.equal(await cmdContainer(['up', '--with', 'workers', '--projects', '/Users/me/dev'], { ...o, exec, dir, env }), 0);
+    assert.equal(await cmdContainer(['down'], { ...o, exec, dir, env }), 0);
+    const ps = calls.find((c) => c.args[0] === 'ps');
+    assert.deepEqual(ps.args, ['ps', '-aq', '--filter', 'label=worca.instance=team-a'], "this stack's workers only");
+    assert.deepEqual(calls.find((c) => c.args[0] === 'rm').args, ['rm', '-f', 'aaa111', 'bbb222']);
+    assert.ok(o.lines.includes('removed 2 worker container(s)'), o.lines.join('|'));
+    assert.equal(await cmdContainer(['pull'], { ...o, exec, dir, env }), 0);
+    assert.deepEqual(calls.filter((c) => c.args[0] === 'pull').map((c) => c.args[1]),
+      ['ghcr.io/sinishadjukic/worca-worker:latest-claude', 'ghcr.io/sinishadjukic/worca-worker:latest-codex']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

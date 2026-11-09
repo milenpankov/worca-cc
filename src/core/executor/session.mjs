@@ -116,7 +116,7 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
       execs.set(id, handlers);
       lastActiveAt = Date.now();
       try {
-        send({ type: 'exec', id, file: spec.file, args: spec.args, cwd: spec.cwd ?? null, env: stringEnv(spec.env), stdin: spec.stdin ?? null, detached: spec.detached !== false, ...(spec.reap ? { reap: true } : {}) });
+        send({ type: 'exec', id, file: spec.file, args: spec.args, cwd: spec.cwd ?? null, env: stringEnv(spec.env), stdin: spec.stdin ?? null, detached: spec.detached !== false, ...(spec.reap ? { reap: true } : {}), ...(spec.withheld?.length ? { withheld: spec.withheld } : {}) });
       } catch (err) {
         execs.delete(id);
         // A frame the protocol refuses carries its own code (EPROTO malformed, E2BIG too large); anything else is the

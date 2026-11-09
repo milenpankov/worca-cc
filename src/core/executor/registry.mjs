@@ -59,7 +59,8 @@ export function createWorkerRegistry({
   const entries = new Map();   // `${scopeKey}|${class}` -> { scope, key, ek, engine, state:'starting'|'ready'|'closing', workerId, token, handle, session, waiters:[], startedAt, idleMs, timer, ctl, abandoned }
   const tokens = new Map();    // token -> { key, ek, workerId, mintedAt, used }
   const scopeEntries = (key) => [...entries.values()].filter((e) => e.key === key);
-  const releases = new Map();   // scopeKey -> how many times it was released: an acquire compares before and after its await
+  const releases = new Map();   // scopeKey -> how many times it was released while an acquire for it was in flight: the acquire compares before and after its await
+  const acquiring = new Map();  // scopeKey -> acquires in flight (the only readers of `releases`: the entry goes when the last one ends)
   /** What tells a scope's workers apart: the backend's class for the engine (its image), else the engine name. */
   const classOf = async (engine) => {
     try { const c = await backend.classFor?.(engine); if (c) return String(c); } catch { /* the engine name will do */ }
@@ -252,10 +253,18 @@ export function createWorkerRegistry({
      * The worker session a spawn of `engine` in this scope runs on: the live one, or a freshly started one.
      * `engine` (else the scope's own) picks the worker class; with neither, any worker the scope has will do.
      */
-    async acquire(scope, { signal, engine = null } = {}) {
+    async acquire(scope, opts = {}) {
       const s = normalizeScope(scope);
       if (!s) throw new Error('acquire: a run or chat scope is required');
       const key = scopeKey(s);
+      acquiring.set(key, (acquiring.get(key) || 0) + 1);
+      try { return await registry._acquire(s, key, opts); }
+      finally {
+        const n = (acquiring.get(key) || 1) - 1;
+        if (n > 0) acquiring.set(key, n); else { acquiring.delete(key); releases.delete(key); }
+      }
+    },
+    async _acquire(s, key, { signal, engine = null } = {}) {
       const want = (typeof engine === 'string' && engine.trim()) || s.engine || null;
       const epoch = releases.get(key) || 0;
       let waitingSince = null;
@@ -289,7 +298,7 @@ export function createWorkerRegistry({
     /** End the scope's workers (no-op when there is none). */
     async release(scope, { reason = 'released', graceMs = 5000 } = {}) {
       const key = scopeKey(scope);
-      if (key) { if (releases.size > 5000) releases.clear(); releases.set(key, (releases.get(key) || 0) + 1); }   // an acquire in flight for this scope must not start a worker now
+      if (key && acquiring.has(key)) releases.set(key, (releases.get(key) || 0) + 1);   // an acquire in flight for this scope must not start a worker now
       const mine = key ? scopeEntries(key) : [];
       if (!mine.length) return false;
       await Promise.all(mine.map((entry) => releaseEntry(entry, { reason, graceMs })));

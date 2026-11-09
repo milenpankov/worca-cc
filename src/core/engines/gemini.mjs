@@ -342,6 +342,7 @@ const GEMINI_SPEC = Object.freeze({
   fatalStderrRe: GEMINI_POLICY_ERROR_RE, fatalMessage: 'Gemini CLI could not load worca\'s policy file, so the guardrail rules would not hold — stopped',
   createNormalizer: createGeminiNormalizer,
   askLockdown: GEMINI_ASK_LOCKDOWN,
+  askMinVersion: GEMINI_ASK_MIN_VERSION,
   prepare({ cwd, bin, sys, prompt, model, effort, servers, permissionRules, includeDirs, scratchDir, noGit, ask, probe }) {
     if (ask) return prepareAsk({ cwd, bin, sys, prompt, model, effort, servers, scratchDir, probe });
     const plan = geminiRulePlan(permissionRules);
