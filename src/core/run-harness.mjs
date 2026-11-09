@@ -1993,9 +1993,6 @@ export class RunHarness extends EventEmitter {
     // so a throw rejects resume() without touching the row. Awaited so an engine
     // may be async; v1's synchronous return is awaited unchanged.
     const rehydrated = await this._engineRehydrate(rp);
-    // A resume runs the same gate as a start: a bridged model refused then (or a run paused before workers were
-    // turned on) must get the sentence that says so, not a connection error from inside a worker.
-    this._remoteExecutorPreflight(this.resolved?.manifest ?? null, this.stepModels);
     if (!rehydrated || typeof rehydrated.audit !== 'string' || !Array.isArray(rehydrated.memberWorktrees)) throw new Error('engine hook contract: _engineRehydrate must return { checkpointRef, memberWorktrees:[], audit }');
     // Engine gate refusals (§10.3) reject resume() here too, outside the try: inside it
     // the 'resume' site below would end the paused run. The row stays paused, so the
@@ -2069,6 +2066,10 @@ export class RunHarness extends EventEmitter {
       }
       this.stepModels = rp.stepModels || null;
       this.workflowId = rp.workflowId || this.workflowId;
+      // A resume runs the same gate as a start, on the run's frozen topology and its step models: a bridged model
+      // refused then (or a run paused before workers were turned on) gets the sentence that says so, not a
+      // connection error from inside a worker.
+      this._remoteExecutorPreflight(rp.manifest ?? null, this.stepModels);
       // Pauses are counted only in _completePaused, so a crash-resume of an `interrupted`
       // run adds a resume but no pause (§4.4 decision 6). The stamp is consumed here.
       this._metricsIv = {
@@ -3982,7 +3983,10 @@ export class RunHarness extends EventEmitter {
       graphInstructions: this.toolInstructions,
       homeDir: homedir(),
       honorByKey: this.guardrailHonorByKey,
-      agentIsolated: !!agentIdentity(),
+      // On a worker the agent's HOME is a fresh worker home (a copied login and settings.json, nothing else): the
+      // person's user-scope Claude config is no more there than under an agent user. Treated the same way, so
+      // nothing is assumed to load natively and no link is made into a HOME the worker does not have.
+      agentIsolated: !!agentIdentity() || isRemoteExecutor(),
       settingsScope: this._settingsScope(),
       engine: this.claude.engine || 'claude',
       setSkills: this._setSkillSources(skillPlan),

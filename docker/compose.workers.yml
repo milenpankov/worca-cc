@@ -28,6 +28,27 @@ services:
       # Optional (.env): which controller network workers join, and this installation's name on a shared Docker host.
       WORCA_WORKER_NETWORK: ${WORCA_WORKER_NETWORK:-}
       WORCA_INSTANCE_ID: ${WORCA_INSTANCE_ID:-}
+      # From `.env`, passed through only when set there (a bare name is not defined in the container when unset).
+      # Credentials of the engines the workers run: the controller holds them and sends them with each spawn
+      # (docs/workers.md, Credentials on workers). compose.yml already passes Claude's.
+      OPENAI_API_KEY:
+      OPENAI_BASE_URL:
+      OPENAI_MODEL:
+      GEMINI_API_KEY:
+      GOOGLE_API_KEY:
+      COPILOT_GITHUB_TOKEN:
+      CURSOR_API_KEY:
+      DASHSCOPE_API_KEY:
+      OPENROUTER_API_KEY:
+      # Worker settings the controller reads.
+      WORCA_WORKER_START_TIMEOUT_MS:
+      WORCA_WORKER_CHAT_IDLE_MS:
+      WORCA_WORKER_CAP_WAIT_MS:
+      WORCA_WORKER_RELAY_PORT:
+      WORCA_WORKER_FULL_ENGINES:
+      WORCA_WORKER_ENGINE:
+      WORCA_WORKER_USER:
+      WORCA_DOCKER_TIMEOUT_MS:
       NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost},docker-proxy,worca,broker,egress
     networks:
       # The network the controller shares with its workers. With the egress overlay it must be

@@ -78,6 +78,7 @@ gets one worker per image, and they end together.
 | `WORCA_WORKER_CHAT_IDLE_MS` | controller | a chat worker leaves after this long with nothing to run (default 15 min) |
 | `WORCA_WORKER_START_TIMEOUT_MS` | controller | how long a worker may take to connect (default 2 min). A worker whose container or pod ends before it connects fails the start at once, with what it printed |
 | `WORCA_DOCKER_TIMEOUT_MS` | controller | how long one Docker Engine request may take (default 30 s) before it fails |
+| `WORCA_WORKER_USER` | controller (Docker) | the `uid:gid` worker containers run as; default: the user the controller process runs as |
 | `WORCA_DB_DIR` | controller | the database's own directory, off the shared volume (SQLite's WAL needs a local filesystem) |
 | `WORCA_CONTROLLER_URL`, `WORCA_WORKER_TOKEN`, `WORCA_WORKER_SCOPE`, `WORCA_WORKER_ID` | worker | the assignment, set by the controller's backend |
 | `WORCA_WORKER_HOME`, `WORCA_WORKER_IDLE_MS` | worker | optional |
@@ -108,7 +109,8 @@ an agent on a worker:
   `ANTHROPIC_*`, `CLAUDE_CODE_*`, `OPENAI_*`, `GEMINI_*`, `GOOGLE_*`, `VERTEX*`, `AWS_*`, `AZURE_*`,
   `COPILOT_*`, `CURSOR_*`, `GOOSE_*`, `DASHSCOPE_*`, `OPENROUTER_*`, plus any name listed in
   `WORCA_WORKER_PASS_ENV` — when the controller sent none of that name (the controller's wins).
-  Never `WORCA_*`, and never `GH_TOKEN` / `GITHUB_TOKEN`: agents get no Git credential. A guardrail
+  Never `WORCA_*`, and never a Git host's token under any name (`GH_*`, `GITHUB_*`, `GITLAB_*`,
+  `BITBUCKET_*`, `AZURE_DEVOPS_*`): agents get no Git credential. A guardrail
   set that scrubs the environment scrubs what the controller sends, not these: a key agents must
   not be able to read belongs in the [credential broker](credential-broker.md).
 
@@ -174,6 +176,12 @@ is not implemented.
   the controller for anything that runs on a worker image (Claude Code, which the controller has, stays checked).
   A worker that lacks the engine refuses the spawn with the image setting to fix; a missing interpreter fails the
   script's spawn.
+- **Your user-scope Claude Code setup is not on a worker.** An agent's HOME there is a fresh worker home with
+  a copied login and `settings.json`: skills, `CLAUDE.md`, agents, commands and MCP servers you keep under
+  `~/.claude` (the controller's volume on Compose) are not read, exactly as with agent users on one machine.
+  Put what a run needs in the project, or in Worca's own skill and MCP registries, which do reach workers.
+- **Versions.** A worker says which worca its image runs. When that is not the controller's, the controller's
+  log names it; `worca container pull` also refreshes the worker images of the stack's tag that are present.
 - **Chat commands** (agent mode, the chat's shell) are off: a chat on a worker reaches its worca tools through
   the relay, which carries no command tools. The chat is told so, and Settings shows it as unavailable.
 - **What a chat may read.** A chat's read rules also name the controller's login volume as a worker sees it

@@ -64,5 +64,5 @@ test('a run under a remote executor: scoped spawns on the run\'s worker, release
   // A python script node runs on the worker image: the controller does not refuse the run for lacking an interpreter.
   assert.match(orch._preflightScriptRuntimes.toString(), /if \(isRemoteExecutor\(\)\) return;/);
   // A resume passes the bridged-model gate too, as a start does.
-  assert.match(orch._resume.toString(), /this\._remoteExecutorPreflight\(/);
+  assert.match(orch._resume.toString(), /this\.stepModels = rp\.stepModels \|\| null;[\s\S]{0,700}this\._remoteExecutorPreflight\(rp\.manifest \?\? null, this\.stepModels\);/, "on the run's frozen topology, once its step models are restored");
 });

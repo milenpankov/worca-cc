@@ -30,7 +30,9 @@ export { isLoopbackUrl };
  * never a Git host token: pushes and pull requests are the controller's, and agents get no Git credential.
  */
 const FROM_WORKER = [/_API_KEY$/, /_AUTH_TOKEN$/, /^ANTHROPIC_/, /^CLAUDE_CODE_/, /^OPENAI_/, /^GEMINI_/, /^GOOGLE_/, /^VERTEX/, /^AWS_/, /^AZURE_/, /^COPILOT_/, /^CURSOR_/, /^GOOSE_/, /^DASHSCOPE_/, /^OPENROUTER_/];
-const NEVER_FROM_WORKER = [/^WORCA_/, /^(GH|GITHUB)_TOKEN$/, /^GH_ENTERPRISE_TOKEN$/];
+// Git hosts by name, not only GitHub's two: `AZURE_DEVOPS_EXT_PAT` would pass as an `AZURE_*` setting otherwise,
+// and it is a push-capable token the controller strips from every spawn (host-credentials.mjs).
+const NEVER_FROM_WORKER = [/^WORCA_/, /^(GH|GITHUB|GITLAB|GL|BITBUCKET|GITEA)_/, /^AZURE_DEVOPS_/, /^SYSTEM_ACCESSTOKEN$/, /^GIT_(ASKPASS|TOKEN|PASSWORD|CREDENTIALS)/];
 export function passesFromWorker(name, extra = []) {
   if (NEVER_FROM_WORKER.some((re) => re.test(name))) return false;
   return extra.includes(name) || FROM_WORKER.some((re) => re.test(name));

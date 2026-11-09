@@ -344,6 +344,8 @@ URL from `docker compose logs teams-tunnel`.
 | `WORCA_WORKER_PORT` | `4319` | the controller's worker listener on the compose network; never published |
 | `WORCA_UPLINK_NETWORK` | `default` | with the `workers` overlay: the network the controller shares with its workers; `internal` together with the egress overlay (`worca container up --with egress,workers` sets it) |
 | `WORCA_WORKER_NETWORK` | chosen | the controller network workers join, when the automatic choice (never the Docker API one, an internal one first) is not the one you want |
+| `WORCA_WORKER_USER` | the controller's own user | the `uid:gid` worker containers run as |
+| `WORCA_WORKER_START_TIMEOUT_MS`, `WORCA_WORKER_CHAT_IDLE_MS`, `WORCA_WORKER_CAP_WAIT_MS`, `WORCA_DOCKER_TIMEOUT_MS` | see [workers.md](workers.md#configuration) | worker timing, passed to the controller when set |
 | `WORCA_INSTANCE_ID` | the Compose project | which installation worker containers belong to, when two share a Docker host |
 | `WORCA_PORT` | `4317` | host loopback port |
 | `TZ` | `UTC` | **scheduled runs use this clock** |
@@ -524,8 +526,11 @@ Step by step, the first time:
    up; `/api/health` through `curl -s localhost:4317/api/health` has an `executor` object.
 3. **Log Claude Code in** as without workers (`worca container login`, or a token or key in
    `.env`): workers copy the login from the controller's volume, and `.env` credentials reach
-   agents on workers too. Other engines need their credential in `.env`:
-   [Credentials on workers](workers.md#credentials-on-workers).
+   agents on workers too. Other engines need their credential in `.env`; the overlay passes
+   these on when set: `OPENAI_API_KEY` (with `OPENAI_BASE_URL`, `OPENAI_MODEL`), `GEMINI_API_KEY`,
+   `GOOGLE_API_KEY`, `COPILOT_GITHUB_TOKEN`, `CURSOR_API_KEY`, `DASHSCOPE_API_KEY`,
+   `OPENROUTER_API_KEY`. Another name needs a line of its own under `worca.environment` in a
+   `compose.override.yml`. See [Credentials on workers](workers.md#credentials-on-workers).
 4. **Start a run or a chat.** `docker ps --filter label=worca.scope` lists the worker
    containers while they live; the controller's log names each one it starts and removes.
 

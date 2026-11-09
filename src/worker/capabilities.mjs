@@ -7,6 +7,10 @@ import { execFile } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { ENGINE_CLIS, DEFAULT_ENGINE_BINS } from '../core/engines/cli-specs.mjs';
+import { createRequire } from 'node:module';
+
+/** This image's worca version: a worker image pulled once under a moving tag can be older than its controller. */
+const packageVersion = () => { try { return String(createRequire(import.meta.url)('../../package.json').version); } catch { return null; } };
 
 /** The binary name each engine's adapter spawns when nothing overrides it (cli-specs.mjs). */
 export const DEFAULT_BINS = DEFAULT_ENGINE_BINS;
@@ -46,5 +50,5 @@ export async function probeCapabilities({ engines = Object.keys(ENGINE_CLIS), en
     const bin = findOnPath(configured, env.PATH, platform);
     found[name] = bin ? { bin, version: await versionOf(bin, timeoutMs) } : null;
   }));
-  return { engines: found, platform, node: process.version, user: env.USER || env.LOGNAME || null };
+  return { engines: found, platform, node: process.version, user: env.USER || env.LOGNAME || null, worca: packageVersion() };
 }

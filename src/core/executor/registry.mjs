@@ -48,6 +48,7 @@ export function createWorkerRegistry({
   tokenTtlMs = null,        // how long a worker has to present its token once its container exists; default: startTimeoutMs
   capWaitMs = envInt('WORCA_WORKER_CAP_WAIT_MS', CAP_WAIT_MS),
   capPollMs = WAIT_POLL_MS,
+  version = null,           // this controller's worca version: a worker that reports another one is named in the log
   probeMs = 3_000,          // while waiting for a worker's hello: how often the backend is asked whether it died
   pingMs = undefined,
   bootId = `ctl-${randomUUID()}`,
@@ -119,6 +120,10 @@ export function createWorkerRegistry({
       t.used = true;
       tokens.delete(token);
       const session = createWorkerSession(ws, { workerId: hello.workerId, scope: hello.scope, capabilities: hello.capabilities, pid: hello.pid, pingMs, log, onRelay });
+      // The controller composes each spawn (flags, hook paths, frame fields) for ITS version; a worker image pulled
+      // once under a moving tag executes them with whatever it has. Not refused (the protocol matches), but said.
+      const theirs = hello.capabilities?.worca;
+      if (version && theirs && String(theirs) !== String(version)) log(`worker ${hello.workerId} runs worca ${theirs}, this controller ${version}: pull the worker image for this version (worca container pull)`);
       ws.send(encodeFrame({ type: 'welcome', controllerBootId: bootId, pingMs: pingMs ?? 30_000, idleMs: entry.idleMs ?? null }));
       entry.session = session;
       entry.state = 'ready';

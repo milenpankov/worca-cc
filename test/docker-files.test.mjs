@@ -589,6 +589,9 @@ test('compose renders the worker settings you set exactly as set (no brace of `{
     assert.doesNotMatch(readFileSync(join(here, f), 'utf8'), /\$\{[^}\n]*\{engine\}/, `${f}: a default containing {engine}`);
   }
   assert.match(readFileSync(join(here, 'compose.workers.yml'), 'utf8'), /\n\s+WORCA_WORKER_IMAGE: \$\{WORCA_WORKER_IMAGE:-\}\n/);
+  for (const name of ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'COPILOT_GITHUB_TOKEN', 'CURSOR_API_KEY', 'WORCA_WORKER_START_TIMEOUT_MS', 'WORCA_WORKER_USER', 'WORCA_DOCKER_TIMEOUT_MS']) {
+    assert.match(readFileSync(join(here, 'compose.workers.yml'), 'utf8'), new RegExp(`\\n      ${name}:\\n`), `${name} is passed through from .env`);
+  }
   // And what Docker Compose itself makes of it, where it is installed.
   const render = (extra) => spawnSyncCompose('docker', ['compose', '-f', 'compose.yml', '-f', 'compose.workers.yml', 'config', '--format', 'json'],
     { cwd: here, encoding: 'utf8', env: { ...process.env, WORCA_PROJECTS: tmpdirCompose(), ...extra }, timeout: 60000 });
@@ -598,4 +601,10 @@ test('compose renders the worker settings you set exactly as set (no brace of `{
   assert.equal(image(probe) ?? '', '', 'unset: empty, and the controller derives the image from its own');
   assert.equal(image(render({ WORCA_WORKER_IMAGE: 'self' })), 'self');
   assert.equal(image(render({ WORCA_WORKER_IMAGE: 'registry.example/worker:1-{engine}' })), 'registry.example/worker:1-{engine}');
+  // An engine credential or a worker setting from `.env` reaches the controller (which sends credentials with each
+  // spawn); one that is not set is not defined in the container at all, rather than set to an empty string.
+  const envOfWorca = JSON.parse(render({ OPENAI_API_KEY: 'sk-test', WORCA_WORKER_START_TIMEOUT_MS: '600000' }).stdout).services.worca.environment;
+  assert.equal(envOfWorca.OPENAI_API_KEY, 'sk-test');
+  assert.equal(envOfWorca.WORCA_WORKER_START_TIMEOUT_MS, '600000');
+  assert.equal(envOfWorca.GEMINI_API_KEY ?? null, null);
 });

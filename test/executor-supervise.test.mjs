@@ -13,7 +13,7 @@ import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
 import { installExecutorFromEnv, keepsWorkerHome, reapWorkersAtBoot } from '../src/core/executor/controller.mjs';
 import { releaseWorker, workerHomeDir } from '../src/core/executor/index.mjs';
 import { scriptSpawnError } from '../src/core/graph/script-runner.mjs';
-import { overlayEnv, workerInstanceOf } from '../src/cli/container.mjs';
+import { overlayEnv, workerInstanceOf, workerImageGlob } from '../src/cli/container.mjs';
 import { FULL_VARIANT_ENGINES, fullVariantEngines } from '../src/core/executor/shared.mjs';
 import { spawnScript } from '../src/core/graph/script-runner.mjs';
 import { installExecutor, isRemoteExecutor, stagingBase, executorKind, executorConfigError, spawnsRemotely, sweepStaged } from '../src/core/executor/index.mjs';
@@ -205,6 +205,16 @@ test('`container down` names the installation the way the backend labelled its w
   assert.equal(workerInstanceOf({ dotEnv: dot({ WORCA_INSTANCE_ID: 'team-a', COMPOSE_PROJECT_NAME: 'b' }), env: {} }), 'team-a', 'an explicit instance id wins (the overlay hands it to the controller)');
   assert.deepEqual(fullVariantEngines({}), [...FULL_VARIANT_ENGINES]);
   assert.deepEqual(fullVariantEngines({ WORCA_WORKER_FULL_ENGINES: 'claude, codex' }), ['claude', 'codex']);
+});
+
+test('`container pull` knows which worker images go with this stack', () => {
+  const dot = (vars) => (name) => vars[name] || null;
+  assert.equal(workerImageGlob({ dotEnv: dot({}), env: {} }), 'ghcr.io/sinishadjukic/worca-worker:latest-*');
+  assert.equal(workerImageGlob({ dotEnv: dot({ WORCA_TAG: '1.3.0', WORCA_IMAGE: 'mirror.corp/worca' }), env: {} }), 'mirror.corp/worca-worker:1.3.0-*');
+  assert.equal(workerImageGlob({ dotEnv: dot({ WORCA_TAG: '1.3.0-full' }), env: {} }), 'ghcr.io/sinishadjukic/worca-worker:1.3.0-*', 'a -full tag: the engine comes before the variant');
+  assert.equal(workerImageGlob({ dotEnv: dot({ WORCA_WORKER_IMAGE: 'reg/w:9-{engine}' }), env: { WORCA_TAG: 'x' } }), 'reg/w:9-*');
+  assert.equal(workerImageGlob({ dotEnv: dot({ WORCA_WORKER_IMAGE: 'self' }), env: {} }), null, 'workers run from the controller image: nothing more to pull');
+  assert.equal(workerImageGlob({ dotEnv: dot({ WORCA_TAG: 'a' }), env: { WORCA_TAG: 'b' } }), 'ghcr.io/sinishadjukic/worca-worker:b-*', 'the process environment wins over .env');
 });
 
 test('egress and workers together put the controller on the internal network, not the open one', () => {

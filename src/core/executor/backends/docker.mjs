@@ -204,7 +204,8 @@ export async function pickWorkerNetwork({ attached = [], inspect = async () => n
   return (confined[0] || usable[0]).name;
 }
 
-export async function createDockerBackend({ env = process.env, log = () => {}, api = null, controllerId = null, bootId = `ctl-${process.pid}-${Date.now().toString(36)}` } = {}) {
+export async function createDockerBackend({ env = process.env, log = () => {}, api = null, controllerId = null, bootId = `ctl-${process.pid}-${Date.now().toString(36)}`,
+  uid = process.getuid?.() ?? null, gid = process.getgid?.() ?? null } = {}) {
   const docker = api || createDockerApi(dockerEndpoint(env), { timeoutMs: envInt(env, 'WORCA_DOCKER_TIMEOUT_MS', 30_000) });
   let version;
   try { version = await docker.version(); } catch (err) { throw new Error(`cannot reach the Docker Engine (${describeEndpoint(env)}): ${err.message}. Mount the socket or set WORCA_DOCKER_HOST to a socket proxy.`); }
@@ -214,7 +215,10 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   const template = {
     mounts: workerMountsFrom(self.Mounts),
     network: await pickWorkerNetwork({ attached: Object.keys(self.NetworkSettings?.Networks || {}), inspect: (n) => docker.network(n), override: env.WORCA_WORKER_NETWORK, log }),
-    user: String(env.WORCA_WORKER_USER || self.Config?.User || ''),
+    // The uid this process runs as — not the container's configured start user: with agent isolation the controller
+    // starts as root and its entrypoint drops to `worca`, and a worker created as `0:0` with every capability
+    // dropped could not write the volume `worca` owns.
+    user: String(env.WORCA_WORKER_USER || (uid != null ? `${uid}:${gid ?? uid}` : self.Config?.User || '')),
     image: self.Config?.Image || null,
   };
   // Which installation these workers belong to: the Compose project (or WORCA_INSTANCE_ID), so a second worca stack

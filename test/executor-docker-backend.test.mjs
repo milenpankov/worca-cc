@@ -21,7 +21,7 @@ const selfMounts = [
 ];
 
 /** A fake Engine on a unix socket. `dieAtOnce` makes started containers exit immediately. */
-function fakeDocker({ dieAtOnce = false, imageMissing = false } = {}) {
+function fakeDocker({ dieAtOnce = false, imageMissing = false, selfUser = '1000:1000' } = {}) {
   const dir = mkdtempSync(join('/tmp', 'wd-'));
   const socketPath = join(dir, 's.sock');
   const containers = new Map();   // id -> { spec, name, running, labels }
@@ -38,7 +38,7 @@ function fakeDocker({ dieAtOnce = false, imageMissing = false } = {}) {
       const json = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(obj === undefined ? '' : JSON.stringify(obj)); };
       if (req.method === 'GET' && path === '/version') return json(200, { Version: '27.0.0' });
       if (req.method === 'GET' && path === `/containers/${SELF}/json`) {
-        return json(200, { Id: SELF, Name: '/worca-worca-1', Mounts: selfMounts, Config: { Image: 'ghcr.io/sinishadjukic/worca:1.20.0', User: '1000:1000' }, NetworkSettings: { Networks: { worca_default: {}, worca_docker_proxy: {} } } });
+        return json(200, { Id: SELF, Name: '/worca-worca-1', Mounts: selfMounts, Config: { Image: 'ghcr.io/sinishadjukic/worca:1.20.0', User: selfUser }, NetworkSettings: { Networks: { worca_default: {}, worca_docker_proxy: {} } } });
       }
       if (req.method === 'POST' && path === '/containers/create') {
         if (imageMissing) return json(404, { message: `No such image: ${body.Image}` });
@@ -118,10 +118,19 @@ test('the backend replicates the controller container and runs a worker on the s
   const d = await fakeDocker();
   try {
     const logs = [];
-    const b = await createDockerBackend({ env: env(d.socketPath, { WORCA_WORKER_MEM: '2g', WORCA_WORKER_CPUS: '1.5' }), log: (l) => logs.push(l) });
+    const b = await createDockerBackend({ uid: 1000, gid: 1000, env: env(d.socketPath, { WORCA_WORKER_MEM: '2g', WORCA_WORKER_CPUS: '1.5' }), log: (l) => logs.push(l) });
     assert.equal(b.kind, 'docker');
     assert.equal(b.template.network, 'worca_default');
     assert.equal(b.template.user, '1000:1000');
+    // With agent isolation the controller's CONTAINER starts as root and its entrypoint drops to `worca`: workers get
+    // the uid the controller process runs as, not the container's configured user (a root worker with every capability
+    // dropped could not write the volume `worca` owns). WORCA_WORKER_USER still names one outright.
+    const asRoot = await fakeDocker({ selfUser: '0:0' });
+    try {
+      assert.equal((await createDockerBackend({ uid: 1000, gid: 1000, env: env(asRoot.socketPath), log: () => {} })).template.user, '1000:1000');
+      assert.equal((await createDockerBackend({ uid: 1000, gid: 1000, env: env(asRoot.socketPath, { WORCA_WORKER_USER: '2000:2000' }), log: () => {} })).template.user, '2000:2000');
+      assert.equal((await createDockerBackend({ uid: null, gid: null, env: env(asRoot.socketPath), log: () => {} })).template.user, '0:0', 'no uid to ask (Windows): the container\'s own');
+    } finally { await asRoot.close(); }
     assert.match(logs[0], /docker 27\.0\.0 .* 4 mount\(s\) replicated/);
     const h = await b.start({ scope: { kind: 'run', id: 'r-1' }, scopeKey: 'run:r-1', workerId: 'w-run-abcd1234', token: 'tok', controllerUrl: 'ws://worca:4319', idleMs: null });
     assert.match(h.name, /^worca-worker-run-r-1-abcd1234$/);
@@ -232,7 +241,7 @@ test('the worker network: never the Docker API one, an internal one before an op
 test('a worker container that exits at once is reported with its log tail and removed; a missing image names itself', async () => {
   const d = await fakeDocker({ dieAtOnce: true });
   try {
-    const b = await createDockerBackend({ env: env(d.socketPath), log: () => {} });
+    const b = await createDockerBackend({ uid: 1000, gid: 1000, env: env(d.socketPath), log: () => {} });
     const err = await b.start({ scope: { kind: 'chat', id: 't' }, scopeKey: 'chat:t', workerId: 'w-chat-1', token: 't', controllerUrl: 'ws://w:1', idleMs: 1000 }).then(() => null, (e) => e);
     assert.match(err.message, /exited at once \(code 78\)/);
     assert.match(err.message, /WORCA_CONTROLLER_URL is not set/, 'the log tail rides the error');
@@ -240,17 +249,17 @@ test('a worker container that exits at once is reported with its log tail and re
   } finally { await d.close(); }
   const d2 = await fakeDocker({ imageMissing: true });
   try {
-    const b = await createDockerBackend({ env: env(d2.socketPath, { WORCA_WORKER_IMAGE: 'nope/worker:{engine}' }), log: () => {} });
+    const b = await createDockerBackend({ uid: 1000, gid: 1000, env: env(d2.socketPath, { WORCA_WORKER_IMAGE: 'nope/worker:{engine}' }), log: () => {} });
     const err = await b.start({ scope: { kind: 'run', id: 'r' }, scopeKey: 'run:r', workerId: 'w', token: 't', controllerUrl: 'ws://w:1', idleMs: null }).then(() => null, (e) => e);
     assert.match(err.message, /worker image nope\/worker:claude is not present on this host/);
   } finally { await d2.close(); }
 });
 
 test('an unreachable engine or an uninspectable self are refused with a hint', async () => {
-  await assert.rejects(createDockerBackend({ env: { WORCA_DOCKER_HOST: 'unix:///nonexistent/docker.sock' } }), /cannot reach the Docker Engine .* Mount the socket or set WORCA_DOCKER_HOST/);
+  await assert.rejects(createDockerBackend({ uid: 1000, gid: 1000, env: { WORCA_DOCKER_HOST: 'unix:///nonexistent/docker.sock' } }), /cannot reach the Docker Engine .* Mount the socket or set WORCA_DOCKER_HOST/);
   const d = await fakeDocker();
   try {
-    await assert.rejects(createDockerBackend({ env: env(d.socketPath, { WORCA_CONTROLLER_CONTAINER: 'ghost' }) }), /cannot inspect the controller's own container "ghost"/);
+    await assert.rejects(createDockerBackend({ uid: 1000, gid: 1000, env: env(d.socketPath, { WORCA_CONTROLLER_CONTAINER: 'ghost' }) }), /cannot inspect the controller's own container "ghost"/);
   } finally { await d.close(); }
 });
 

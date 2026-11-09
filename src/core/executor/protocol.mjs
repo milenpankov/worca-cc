@@ -60,7 +60,8 @@ export function isValidCapabilities(c) {
     if (v === null) continue;
     if (!isPlainObject(v) || !str(v.bin, 4096) || !(v.version === null || str(v.version, 256))) return false;
   }
-  return str(c.platform, 32) && str(c.node, 64) && (c.user === undefined || c.user === null || str(c.user, 256));
+  return str(c.platform, 32) && str(c.node, 64) && (c.user === undefined || c.user === null || str(c.user, 256))
+    && (c.worca === undefined || c.worca === null || str(c.worca, 64));   // the worker image's worca version
 }
 
 /** The one spawn request: what child_process.spawn gets on the worker. `env` is the COMPLETE child env

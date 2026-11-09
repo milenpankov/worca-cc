@@ -388,6 +388,24 @@ test('a token lives as long as the registry waits for the hello, unless told oth
   } finally { await long.closeAll(); }
 });
 
+test('a worker that runs another worca version than the controller is named in the log, and still served', async () => {
+  const logs = [];
+  const b2 = createInProcessBackend({ homeRoot: worcaHome(), capabilities: { ...CAPS, worca: '1.2.0' } });
+  const reg2 = createWorkerRegistry({ backend: b2, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, version: '1.3.0', log: (m) => logs.push(m) });
+  await reg2.listen();
+  try {
+    const s = await reg2.acquire({ kind: 'run', id: 'old-image' });
+    assert.equal(s.capabilities.worca, '1.2.0');
+    assert.ok(logs.some((l) => /worker w-run-[0-9a-f]+ runs worca 1\.2\.0, this controller 1\.3\.0: pull the worker image/.test(l)), logs.join('\n'));
+  } finally { await reg2.closeAll(); }
+  const same = [];
+  const b3 = createInProcessBackend({ homeRoot: worcaHome(), capabilities: { ...CAPS, worca: '1.3.0' } });
+  const reg3 = createWorkerRegistry({ backend: b3, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, version: '1.3.0', log: (m) => same.push(m) });
+  await reg3.listen();
+  try { await reg3.acquire({ kind: 'run', id: 'same-image' }); assert.ok(!same.some((l) => /pull the worker image/.test(l))); }
+  finally { await reg3.closeAll(); }
+});
+
 test('a relay answer too large to send comes back as an error at once, not as silence', async () => {
   const b2 = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
   const reg2 = createWorkerRegistry({ backend: b2, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, log: () => {},

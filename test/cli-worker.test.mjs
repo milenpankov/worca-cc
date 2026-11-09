@@ -163,6 +163,11 @@ test("the worker's own engine credentials reach its children when the controller
   for (const name of ['WORCA_WORKER_TOKEN', 'WORCA_CONTROLLER_URL', 'WORCA_WORKER_PASS_ENV', 'GH_TOKEN', 'GITHUB_TOKEN', 'HOSTNAME', 'KUBERNETES_SERVICE_HOST']) assert.equal(e[name], undefined, name);
   assert.equal(passesFromWorker('WORCA_BROKER_SECRET', ['WORCA_BROKER_SECRET']), false, 'never, even when listed');
   assert.equal(passesFromWorker('GH_TOKEN', ['GH_TOKEN']), false, 'agents get no Git credential');
+  // …of any Git host: `AZURE_DEVOPS_EXT_PAT` looks like an `AZURE_*` setting and is a push-capable token.
+  for (const name of ['AZURE_DEVOPS_EXT_PAT', 'GITLAB_TOKEN', 'BITBUCKET_TOKEN', 'GITHUB_APP_PRIVATE_KEY', 'SYSTEM_ACCESSTOKEN', 'GIT_ASKPASS']) assert.equal(passesFromWorker(name, [name]), false, name);
+  for (const name of ['AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT', 'COPILOT_GITHUB_TOKEN']) assert.equal(passesFromWorker(name), true, name);
+  const e2 = childEnv({}, { workerEnv: { AZURE_DEVOPS_EXT_PAT: 'pat', AZURE_OPENAI_API_KEY: 'k' }, exists: () => true });
+  assert.deepEqual([e2.AZURE_DEVOPS_EXT_PAT, e2.AZURE_OPENAI_API_KEY], [undefined, 'k']);
 });
 
 test('a Claude login renewed on the controller replaces the one a long-lived worker HOME was seeded with', () => {

@@ -38,6 +38,20 @@ export function workerInstanceOf({ dotEnv = () => null, env = {} } = {}) {
   return dotEnv('WORCA_INSTANCE_ID') || env.WORCA_INSTANCE_ID || env.COMPOSE_PROJECT_NAME || dotEnv('COMPOSE_PROJECT_NAME') || 'worca';
 }
 
+/**
+ * A `docker images` reference pattern for this stack's worker images, any engine: from WORCA_WORKER_IMAGE when it
+ * has the `{engine}` placeholder, else the default `<WORCA_IMAGE>-worker:<WORCA_TAG>-*`. null when workers run from
+ * one fixed image (`self`, or a pattern without the placeholder): there is nothing per engine to refresh.
+ */
+export function workerImageGlob({ dotEnv = () => null, env = {} } = {}) {
+  const get = (name) => env[name] || dotEnv(name) || '';
+  const pattern = get('WORCA_WORKER_IMAGE');
+  if (pattern) return pattern.includes('{engine}') ? pattern.replaceAll('{engine}', '*') : null;
+  const tag = get('WORCA_TAG') || 'latest';
+  const image = get('WORCA_IMAGE') || 'ghcr.io/sinishadjukic/worca';
+  return tag.endsWith('-full') ? `${image}-worker:${tag.slice(0, -5)}-*` : `${image}-worker:${tag}-*`;
+}
+
 /** Compose variables an overlay COMBINATION needs. With the egress allowlist on, the controller shares the
  *  internal network with its workers, never the open default one (compose.workers.yml WORCA_UPLINK_NETWORK). */
 export function overlayEnv(overlays = [], { already = null } = {}) {
@@ -361,7 +375,20 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
     }
     case 'status': return compose(['ps']);
     case 'logs': return compose(['logs', ...(a.follow ? ['-f'] : []), 'worca']);
-    case 'pull': return compose(['pull', 'worca']);
+    case 'pull': {
+      const code = compose(['pull', 'worca']);
+      // Worker images are started by the controller, not by compose, so `compose pull` does not know them: a stale
+      // one under a moving tag would run against the new controller. Every worker image of this tag that is here
+      // is pulled too.
+      const glob = workerImageGlob({ dotEnv: (name) => readEnvValue(dir, name), env: composeEnv ?? process.env });
+      if (overlays.includes('workers') && glob) {
+        const ls = exec(rt.bin, ['images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', `reference=${glob}`], { cwd: dir, env: composeEnv, stdio: ['ignore', 'pipe', 'ignore'] });
+        const images = [...new Set(String(ls.stdout || '').split(/\s+/).filter((i) => i && !i.endsWith(':<none>')))];
+        if (!images.length) out(`no worker image here yet: pull the one for your engine, e.g. ${glob.replace('*', 'claude')}`);
+        for (const image of images) exec(rt.bin, ['pull', image], { cwd: dir, env: composeEnv, stdio: 'inherit' });
+      }
+      return code;
+    }
     case 'login': return compose(['run', '--rm', 'worca', 'claude']);
     case 'shell': return compose(['run', '--rm', 'worca', 'bash']);
     case 'run': {
