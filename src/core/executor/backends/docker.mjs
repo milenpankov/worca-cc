@@ -248,7 +248,7 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
     template,
     /** What tells this scope's workers apart: the image an engine runs on (one image for every engine = one worker). */
     async classFor(engine) { return workerImageFor(engine || await engineFor(), { pattern, controllerImage: template.image, fullEngines }) || 'none'; },
-    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine: asked = null }) {
+    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine: asked = null, connected = () => false }) {
       const engine = asked || await engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
       const image = workerImageFor(engine, { pattern, controllerImage: template.image, fullEngines });
       if (!image) throw new Error(`no worker image can be derived from the controller's image (${template.image || 'unknown'}): set WORCA_WORKER_IMAGE, e.g. registry/worca-worker:<tag>-{engine}`);
@@ -288,8 +288,10 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
           await new Promise((r) => setTimeout(r, 250));
         }
       } catch (err) {
-        await docker.remove(id).catch(() => {});
-        throw err;
+        // The worker is already connected to the registry: the container runs, whatever the Engine's answer about it
+        // was (a request that timed out, a transient error). Never remove a live worker over that.
+        if (!connected()) { await docker.remove(id).catch(() => {}); throw err; }
+        log(`${name}: the Engine could not confirm the start (${err?.message || err}), but its worker is connected`);
       }
       live.set(workerId, handle);
       log(`started ${name} (${image}) for ${scopeKey}`);

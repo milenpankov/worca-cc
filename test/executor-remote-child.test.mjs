@@ -147,3 +147,13 @@ test('withheldNames: what the controller holds and did not send, and every model
   assert.ok(!brokered.includes('ANTHROPIC_AUTH_TOKEN'), 'the token the spawn was given is not withheld');
   assert.ok(!withheldNames({ PATH: '/usr/bin' }, { PATH: '/usr/bin' }).includes('ANTHROPIC_API_KEY'), 'no broker: a worker-held key is the worker\'s to add');
 });
+
+test('kill reports false for a signal the protocol cannot carry, and sends nothing', () => {
+  const s = fakeSession();
+  const child = createRemoteChild(s, { ...spec, controllerEnv: {} });
+  assert.equal(child.kill('SIGHUP'), false);
+  assert.equal(child.kill(9), false);
+  assert.deepEqual(s.signals, []);
+  assert.equal(child.kill('SIGTERM'), true);
+  assert.deepEqual(s.signals, [['x1', 'SIGTERM']]);
+});

@@ -8,7 +8,7 @@
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { MODEL_CREDENTIAL_ENV_KEYS } from '../broker-guard.mjs';
-import { MAX_WITHHELD } from './protocol.mjs';
+import { MAX_WITHHELD, SIGNALS } from './protocol.mjs';
 
 /** Why an exec ended without an exit: the worker went away. Classified as a network failure
  *  so the harness's failure policy retries it, on a fresh worker. */
@@ -96,6 +96,7 @@ export function createRemoteChild(session, { file, args, cwd, env, stdin = null,
   child.id = id;
   child.kill = (sig = 'SIGTERM') => {
     if (child.exitCode !== null || child.signalCode !== null) return false;
+    if (!SIGNALS.includes(sig)) return false;   // the protocol carries SIGTERM, SIGKILL and SIGINT: anything else was not sent
     try { session.signal(id, sig); return true; } catch { return false; }
   };
   return child;

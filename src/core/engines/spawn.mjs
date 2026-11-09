@@ -327,7 +327,7 @@ function superviseLocal(o, session = null) {
     let childEnv = env;
     // ENOENT/EINVAL on a Windows script shim: say why (the same text the preflight shows).
     const withShimHint = (err) => {
-      if (!err || !/^(ENOENT|EINVAL)$/.test(String(err.code))) return err;
+      if (session || !err || !/^(ENOENT|EINVAL)$/.test(String(err.code))) return err;   // a worker's ENOENT is about the worker's image, not this filesystem
       let hint = null;
       try { hint = explainUnspawnableCli(file, cli); } catch { /* no hint */ }
       return hint ? Object.assign(new Error(`${err.message} — ${hint}`), { code: err.code }) : err;

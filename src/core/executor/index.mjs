@@ -11,7 +11,8 @@
 // unchanged. See docs/workers.md.
 import { join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
-import { readdirSync, rmSync, statSync } from 'node:fs';
+import { readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { worcaHome } from '../projects.mjs';
 import { currentExecutorScope, normalizeScope } from './scope.mjs';
 
@@ -119,10 +120,24 @@ export function spawnHomeDir() {
   return (scope && workerHomeDir(scope)) || homedir();
 }
 
+/** The suffix a worker HOME carries while its removal runs in the background (sweepWorkerHomes finishes any left). */
+const DISCARDED = '.discarded-';
+
+/**
+ * Remove a folder without stalling this process: it is renamed aside at once (one directory entry, so a replacement
+ * worker starting now finds the path free), and its files go in the background — on a network volume a worker HOME
+ * holds thousands of them, and a synchronous removal would hold the whole server for seconds. Best effort.
+ */
+export function discardDir(dir) {
+  let gone = dir;
+  try { gone = `${dir}${DISCARDED}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`; renameSync(dir, gone); } catch { gone = dir; }
+  rm(gone, { recursive: true, force: true }).catch(() => { /* next sweep */ });
+}
+
 /** Remove a scope's worker HOME. Best effort; never throws. */
 export function removeWorkerHome(scope, home = worcaHome()) {
   const dir = workerHomeDir(scope, home);
-  if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } }
+  if (dir) discardDir(dir);
 }
 
 /**
@@ -153,8 +168,10 @@ export function sweepWorkerHomes({ keep = () => false, home = worcaHome() } = {}
     let names = [];
     try { names = readdirSync(dir); } catch { continue; }
     for (const id of names) {
+      // A removal a previous process did not finish: completed here, not counted (it was removed then).
+      if (id.includes(DISCARDED)) { rm(join(dir, id), { recursive: true, force: true }).catch(() => {}); continue; }
       if (keep({ kind, id })) continue;
-      try { rmSync(join(dir, id), { recursive: true, force: true }); removed.push(`${kind}:${id}`); } catch { /* next boot */ }
+      discardDir(join(dir, id)); removed.push(`${kind}:${id}`);
     }
   }
   return removed;

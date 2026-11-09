@@ -67,6 +67,9 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
     });
   };
 
+  // The controller releases an idle worker (its sweep, with a shutdown frame); this timer is the backstop for a
+  // controller that never does, so it fires well after the controller's own moment and never races it.
+  const IDLE_BACKSTOP = 2;
   const armIdle = () => {
     clearTimeout(idleTimer);
     if (idleMs == null || runner.liveCount > 0) return;
@@ -75,8 +78,8 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
       shuttingDown = true;
       send({ type: 'bye' });
       try { ws.close(1000, 'idle'); } catch { /* gone */ }
-      finish(0, `idle for ${idleMs} ms`);
-    }, idleMs);
+      finish(0, `idle for ${idleMs * IDLE_BACKSTOP} ms`);
+    }, idleMs * IDLE_BACKSTOP);
     idleTimer.unref?.();
   };
   runner.onIdle(armIdle);

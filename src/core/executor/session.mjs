@@ -105,6 +105,8 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
     get closed() { return closed; },
     get closeReason() { return closeReason; },
     get liveExecCount() { return execs.size; },
+    /** The worker said bye (it idled out, or answered a shutdown): its socket is closing, nothing more can run on it. */
+    get leaving() { return byeSeen; },
     get lastActiveAt() { return lastActiveAt; },
     touch() { lastActiveAt = Date.now(); },
     /**

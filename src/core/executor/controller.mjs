@@ -54,12 +54,18 @@ export async function relayAskLine(token, line) {
   // between feed and idle is this line's answer.
   // In the chat's executor scope: what a tool spawns (a script the chat wrote and benches, a task classifier on the
   // chat's engine) runs on the chat's worker, not in this container beside the database. No scope: as before.
-  await withExecutorScope(entry.scope ?? null, () => withBillTo(entry.billTo, async () => {
+  // One line at a time per turn, in arrival order: the child sends sequentially, but a relay that gave up waiting
+  // (the shim's timeout) lets its next line arrive while the slow call still runs here, and the two must not share
+  // the turn's output buffer.
+  const run = () => withExecutorScope(entry.scope ?? null, () => withBillTo(entry.billTo, async () => {
     entry.out = [];
     await entry.rpc.feed(line);
     await entry.rpc.idle();
+    return entry.out;
   }, { owner: entry.owner }));
-  return { lines: entry.out, error: null };
+  const turn = (entry.chain ?? Promise.resolve()).then(run, run);
+  entry.chain = turn.catch(() => {});
+  return { lines: await turn, error: null };
 }
 
 /**

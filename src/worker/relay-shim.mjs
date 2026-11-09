@@ -8,14 +8,16 @@ import http from 'node:http';
 
 export const DEFAULT_RELAY_PORT = 4318;
 const BODY_MAX = 4 * 1024 * 1024;
-const RELAY_TIMEOUT_MS = 120_000;
+/** How long one relayed line may take to be answered: a chat tool call can run a script or wait on a run, so this is
+ *  long; the socket's loss answers sooner when the controller is gone. WORCA_WORKER_RELAY_TIMEOUT_MS overrides it. */
+const RELAY_TIMEOUT_MS = 15 * 60_000;
 
 /**
  * @param {{ relay: (token: string, line: string) => Promise<{lines: string[]|null, error: string|null}>,
  *   port?: number, host?: string, log?: (msg: string) => void }} o
  * @returns {Promise<{ port: number, url: string, close: () => Promise<void> }>}
  */
-export function startRelayShim({ relay, port = DEFAULT_RELAY_PORT, host = '127.0.0.1', log = () => {} }) {
+export function startRelayShim({ relay, port = DEFAULT_RELAY_PORT, host = '127.0.0.1', timeoutMs = RELAY_TIMEOUT_MS, log = () => {} }) {
   const server = http.createServer((req, res) => {
     const reply = (status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
     if (req.method !== 'POST' || req.url !== '/api/ask/relay') return reply(404, { error: 'not found' });
@@ -31,7 +33,7 @@ export function startRelayShim({ relay, port = DEFAULT_RELAY_PORT, host = '127.0
       try {
         const r = await Promise.race([
           relay(token, line),
-          new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('relay timed out')), RELAY_TIMEOUT_MS); }),
+          new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('relay timed out')), timeoutMs); }),
         ]);
         if (r?.error) return reply(502, { error: r.error });
         return reply(200, { out: r?.lines ?? [] });

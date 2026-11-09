@@ -602,3 +602,58 @@ test("with one image for every engine the run's only worker is its own, whicheve
     assert.equal(b.started.length, 1);
   } finally { await r.closeAll(); }
 });
+
+test('a worker whose start is reported late, after it connected, stays; a worker that said bye is not handed out again', async () => {
+  const b = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  const inner = b.start.bind(b);
+  // The backend's own wait for the container fails AFTER the worker has connected (a stalled watch, an Engine request
+  // that timed out): the session is live and must not be torn down over it.
+  b.start = async (o) => { const h = await inner(o); for (let i = 0; i < 200 && !o.connected(); i++) await new Promise((r) => setTimeout(r, 10)); throw new Error('watch stalled'); };
+  const got = [];
+  const r = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, chatIdleMs: 60_000, log: (m) => got.push(m) });
+  await r.listen();
+  try {
+    const scope = { kind: 'chat', id: 'late-start' };
+    const s = await r.acquire(scope);
+    await new Promise((res) => setTimeout(res, 300));
+    assert.equal(s.closed, false, 'the live session survived the late error');
+    assert.equal(r.snapshot().length, 1);
+    assert.ok(got.some((l) => /is connected; its start reported late: watch stalled/.test(l)), got.join('\n'));
+    assert.equal(await r.acquire(scope), s);
+  } finally { await r.closeAll(); }
+});
+
+test("a worker that said bye is not handed out again: the next acquire waits for its close and starts afresh", async () => {
+  const b = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  const r = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, chatIdleMs: 100, log: () => {} });
+  await r.listen();
+  try {
+    const scope = { kind: 'chat', id: 'leaving' };
+    const s = await r.acquire(scope);
+    // The worker idles out by itself (bye, then close). Between the two the session is 'leaving'.
+    for (let i = 0; i < 400 && !s.leaving && !s.closed; i++) await new Promise((res) => setTimeout(res, 2));
+    assert.ok(s.leaving || s.closed, 'the worker left');
+    const fresh = await r.acquire(scope);
+    assert.notEqual(fresh, s, 'never the dying session');
+    assert.equal(fresh.closed, false);
+    assert.equal(b.started.length, 2);
+  } finally { await r.closeAll(); }
+});
+
+test("a chat worker's own idle timer is a backstop: it fires well after the controller's moment, and its leave is logged as such", async () => {
+  const b = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  const got = [];
+  const r = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, chatIdleMs: 200, log: (m) => got.push(m) });
+  await r.listen();
+  try {
+    const s = await r.acquire({ kind: 'chat', id: 'backstop' });
+    const h = b.started.at(-1);
+    await new Promise((res) => setTimeout(res, 250));
+    assert.equal(s.closed, false, 'at the controller\'s idle moment the worker is still here: the controller releases, the worker does not race it');
+    await h.done;
+    for (let i = 0; i < 200 && !s.closed; i++) await new Promise((res) => setTimeout(res, 5));
+    assert.equal(s.closeReason, 'bye');
+    assert.ok(got.some((l) => /worker w-chat-\w+ for chat:backstop left: idle/.test(l)), got.join('\n'));
+    assert.ok(!got.some((l) => /is gone: bye/.test(l)), 'a routine leave is not a loss');
+  } finally { await r.closeAll(); }
+});

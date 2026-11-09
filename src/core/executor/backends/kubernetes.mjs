@@ -261,7 +261,7 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
       return resolveImage({ pattern: imagePattern, engine: e, variant, version, overrides });
     },
 
-    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs = null, env: extra = {}, prewarmed = null, engine: asked = null, signal = null } = {}) {
+    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs = null, env: extra = {}, prewarmed = null, engine: asked = null, signal = null, connected = () => false } = {}) {
       if (!scope?.kind || !scope?.id || !scopeKey || !workerId) throw startFailure('start: scope, scopeKey and workerId are required');
       const workerEnv = workerEnvFor({ controllerUrl, token, scopeKey, workerId, idleMs, controllerEnv: env, extra });
       const engine = asked || await engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
@@ -282,8 +282,14 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
       try {
         running = await awaitRunning(pod, name, image, signal);
       } catch (err) {
-        client.deletePod(namespace, name, { gracePeriodSeconds: 0 }).catch((e) => log(`cleanup of ${name}: ${e.message}`));
-        throw err;
+        // The worker is already connected to the registry: the pod runs, whatever the watch said (one that stalled, a
+        // pending timeout that outlived the connect). Never delete a live worker over that.
+        if (!connected()) {
+          client.deletePod(namespace, name, { gracePeriodSeconds: 0 }).catch((e) => log(`cleanup of ${name}: ${e.message}`));
+          throw err;
+        }
+        log(`pod ${name}: its start could not be confirmed (${err?.message || err}), but its worker is connected`);
+        running = pod;
       }
       const handle = handleOf(running, { workerId, engine, scopeKey });
       handle.uid ||= pod?.metadata?.uid || null;

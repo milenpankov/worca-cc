@@ -13,7 +13,7 @@ import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
 import { installExecutorFromEnv, keepsWorkerHome, reapWorkersAtBoot, askRelayUrl, WORKER_RELAY_PORT, relayAskLine, bindAskRelays } from '../src/core/executor/controller.mjs';
 import { composeSpawnEnv, scrubKeepList, ENV_KEEP_VAR } from '../src/core/engines/spawn.mjs';
 import { scriptBaseEnv, envForShell } from '../src/core/graph/script-runner.mjs';
-import { releaseWorker, workerHomeDir, spawnHomeDir, helperEngineHere } from '../src/core/executor/index.mjs';
+import { releaseWorker, workerHomeDir, spawnHomeDir, helperEngineHere, discardDir, sweepWorkerHomes } from '../src/core/executor/index.mjs';
 import { createBackend } from '../src/core/executor/backends/index.mjs';
 import { createWorkerRegistry } from '../src/core/executor/registry.mjs';
 import { homedir } from 'node:os';
@@ -506,4 +506,42 @@ test('a scrubbed spawn bound for a worker carries what its scrub lets through; a
   // The database follows WORCA_DB_DIR before the home: a script that runs worca code must not find the live one.
   const env = envForShell({ inputs: {}, outputs: {} }, { PATH: '/bin', WORCA_HOME: '/h', WORCA_DB_DIR: '/worca-db' });
   assert.deepEqual(['WORCA_HOME', 'WORCA_DB_DIR'].map((k) => k in env), [false, false]);
+});
+
+test('a relayed turn answers one line at a time: a slow call and the next line never share the output buffer', async () => {
+  let release; const slow = new Promise((r) => { release = r; });
+  const rpc = {
+    async feed(line) { if (line === 'slow') { await slow; relays.get('tok').out.push('answer:slow'); } else relays.get('tok').out.push(`answer:${line}`); },
+    async idle() {},
+  };
+  const relays = new Map([['tok', { out: [], billTo: null, owner: null, rpc }]]);
+  bindAskRelays(relays);
+  try {
+    const first = relayAskLine('tok', 'slow');          // the shim gave up on this one and the child sent its next line…
+    const second = relayAskLine('tok', 'next');         // …while the slow call still runs here
+    await new Promise((r) => setTimeout(r, 30));
+    release();
+    assert.deepEqual(await first, { lines: ['answer:slow'], error: null });
+    assert.deepEqual(await second, { lines: ['answer:next'], error: null }, 'the second line waited and got only its own answer');
+  } finally { bindAskRelays(new Map()); }
+});
+
+test('a worker HOME is discarded without a blocking removal: renamed aside at once, deleted in the background, leftovers finished by the sweep', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'worca-discard-'));
+  const homes = join(root, 'worker-homes', 'run');
+  const dir = join(homes, 'r-gone');
+  mkdirSync(join(dir, 'deep'), { recursive: true });
+  writeFileSync(join(dir, 'deep', 'f.txt'), 'x');
+  discardDir(dir);
+  assert.equal(existsSync(dir), false, 'the path is free at once (a replacement worker can start)');
+  for (let i = 0; i < 100 && readdirSync(homes).length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(readdirSync(homes), [], 'and the files went in the background');
+  // A removal a previous process did not finish is completed by the boot sweep and not counted as a removal.
+  mkdirSync(join(homes, 'r-old.discarded-abc', 'x'), { recursive: true });
+  mkdirSync(join(homes, 'r-finished'), { recursive: true });
+  const removed = sweepWorkerHomes({ keep: () => false, home: root });
+  assert.deepEqual(removed, ['run:r-finished']);
+  for (let i = 0; i < 100 && readdirSync(homes).length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(readdirSync(homes), []);
+  rmSync(root, { recursive: true, force: true });
 });

@@ -82,6 +82,7 @@ export const PROXY_NAMES = Object.freeze(['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROX
 export const WORKER_PASS_THROUGH = Object.freeze([
   'TZ', 'WORCA_BROKER_URL', 'WORCA_MOCK', 'WORCA_CA_CERT_FILE', 'NODE_EXTRA_CA_CERTS', 'WORCA_SIGTERM_GRACE_MS',
   'WORCA_WORKER_RELAY_PORT',   // the controller tells a chat's MCP child this port: the worker's shim must listen on the same one
+  'WORCA_WORKER_RELAY_TIMEOUT_MS',
   'WORCA_CLAUDE_BIN', 'WORCA_CODEX_BIN', 'WORCA_GEMINI_BIN', 'WORCA_QWEN_BIN', 'WORCA_COPILOT_BIN', 'WORCA_CURSOR_BIN', 'WORCA_GOOSE_BIN', 'WORCA_OPENCODE_BIN',
 ]);
 

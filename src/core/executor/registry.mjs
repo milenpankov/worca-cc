@@ -134,9 +134,12 @@ export function createWorkerRegistry({
         if (entries.get(t.ek) !== entry) return;
         entries.delete(t.ek);
         if (entry.state !== 'closing') {
-          log(`worker ${entry.workerId} for ${t.key} is gone: ${reason}`);
+          // `bye` with nothing running: the worker idled out by itself (its own timer is the backstop of this
+          // registry's sweep) — a leave, not a loss.
+          const left = reason === 'bye' && session.liveExecCount === 0;
+          log(left ? `worker ${entry.workerId} for ${t.key} left: idle` : `worker ${entry.workerId} for ${t.key} is gone: ${reason}`);
           entry.abandoned = true;   // a handle the backend has not handed over yet is removed when it arrives (begin)
-          if (entry.handle) backend.remove(entry.handle, { reason: `lost: ${reason}` }).catch(() => {});
+          if (entry.handle) backend.remove(entry.handle, { reason: left ? 'idle' : `lost: ${reason}` }).catch(() => {});
         }
       });
       const waiters = entry.waiters; entry.waiters = [];
@@ -177,7 +180,8 @@ export function createWorkerRegistry({
     entries.set(ek, entry);
     entry.token = mintToken(key, ek, workerId);
     Promise.resolve()
-      .then(() => backend.start({ scope, scopeKey: key, workerId, token: entry.token, controllerUrl: urlForWorkers(), idleMs: entry.idleMs, engine, env: {}, signal: entry.ctl.signal }))
+      .then(() => backend.start({ scope, scopeKey: key, workerId, token: entry.token, controllerUrl: urlForWorkers(), idleMs: entry.idleMs, engine, env: {}, signal: entry.ctl.signal,
+        connected: () => entry.state === 'ready' }))   // the backend's own wait may lose track of a container whose worker is already here
       .then((handle) => {
         entry.handle = handle;
         if (entry.abandoned || entry.state === 'closing') { backend.remove(handle, { reason: 'start abandoned' }).catch(() => {}); return; }
@@ -196,6 +200,9 @@ export function createWorkerRegistry({
         if (entry.state === 'starting') entry.timer = setTimeout(() => fail(entry, startFailure(`worker ${workerId} for ${key} did not connect within ${Math.round(startTimeoutMs / 1000)} s`)), startTimeoutMs);
       }, (err) => {
         if (entry.abandoned) return;
+        // The worker connected while its backend was still waiting for the container: the session is live and stays.
+        // Its container is then only known to boot maintenance (the backend handed no handle over).
+        if (entry.state === 'ready') { log(`worker ${workerId} for ${key} is connected; its start reported late: ${err?.message || err}`); return; }
         fail(entry, startFailure(`cannot start a worker for ${key}: ${err?.message || err}`));
       });
     return entry;
@@ -277,14 +284,20 @@ export function createWorkerRegistry({
         if (signal?.aborted) throw abortError();
         if (closing) throw startFailure('the server is shutting down');
         let entry = want ? null : (scopeEntries(key)[0] || null);
-        const ek = entry ? entry.ek : `${key}|${await classOf(want)}`;
-        const helper = !entry && s.kind === 'run' && !!s.engine && !!want && want !== s.engine && ek !== `${key}|${await classOf(s.engine)}`;
+        // One await for both lookups: every await here is a window a release must be checked after.
+        const ownEngine = s.kind === 'run' && s.engine && want && want !== s.engine ? s.engine : null;
+        const [wantClass, ownClass] = entry ? [null, null] : await Promise.all([classOf(want), ownEngine ? classOf(ownEngine) : null]);
+        const ek = entry ? entry.ek : `${key}|${wantClass}`;
+        const helper = !entry && !!ownEngine && wantClass !== ownClass;
         // Asked again after the await: a stop, a shutdown or the scope's release may have happened meanwhile, and a
         // worker begun now would belong to nobody (a run's has no idle timeout: it would hold a slot until the next boot).
         if (signal?.aborted) throw abortError();
         if (closing) throw startFailure('the server is shutting down');
         if ((releases.get(key) || 0) !== epoch) throw startFailure(`the worker for ${key} was released while this spawn was starting`);
         entry ||= entries.get(ek) || null;
+        // A worker on its way out (it idled out by itself and said bye; its close is not yet processed) takes no more
+        // work: wait for the close, then start afresh.
+        if (entry?.state === 'ready' && entry.session.leaving) { await new Promise((r) => entry.session.onClose(r)); continue; }
         if (entry?.state === 'ready') { entry.session.touch(); return entry.session; }
         if (entry?.state === 'starting') return waitFor(entry, signal);
         // The cap bounds how many scopes hold workers. A scope that already holds one never waits for its second
