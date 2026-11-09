@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { userInfo } from 'node:os';
+import { existsSync } from 'node:fs';
 import { OUT_WINDOW, OUT_BATCH_LINES, OUT_FLUSH_MS } from '../core/executor/protocol.mjs';
 
 /** Env vars a worker never hands to a child: its own credentials, and a proxy that points at the
@@ -26,10 +27,22 @@ export function isLoopbackUrl(value) {
  * home on the shared volume), its own pid as the host-guard pid, and nothing that only the
  * worker should hold.
  */
-export function childEnv(env, { home, workerPid = process.pid, user = null } = {}) {
+/** Variables whose value is a path INSIDE a container: the controller composed the env in its own container, where
+ *  its entrypoint built a CA bundle under its /tmp and (on a worker) this one's entrypoint set shared cache dirs. */
+const CA_FILE_VARS = ['SSL_CERT_FILE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'];
+const WORKER_LOCAL_ENV = [...CA_FILE_VARS, 'npm_config_cache', 'UV_CACHE_DIR', 'PLAYWRIGHT_BROWSERS_PATH'];
+
+export function childEnv(env, { home, workerPid = process.pid, user = null, workerEnv = process.env, exists = existsSync } = {}) {
   const out = { ...env };
   for (const k of WORKER_ONLY_ENV) delete out[k];
   for (const k of PROXY_VARS) if (out[k] && isLoopbackUrl(out[k])) delete out[k];
+  // This container's own value wins (its entrypoint rebuilt the CA bundle and set the caches); a CA file path that
+  // exists nowhere here — the controller's /tmp/worca-ca.*/bundle.pem — is dropped rather than break every TLS call.
+  const usable = (k, v) => !!v && (!CA_FILE_VARS.includes(k) || exists(v));
+  for (const k of WORKER_LOCAL_ENV) {
+    if (usable(k, workerEnv?.[k])) out[k] = workerEnv[k];
+    else if (out[k] !== undefined && !usable(k, out[k])) delete out[k];
+  }
   if (home) out.HOME = home;
   if (user) { out.USER = user; out.LOGNAME = user; }
   out.WORCA_HOST_PID = String(workerPid);
