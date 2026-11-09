@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { useTempHome } from './helpers/temp-home.mjs';
 import { createLoopbackRegistry, createLoopbackSession } from './helpers/loopback-worker-session.mjs';
-import { superviseSpawn } from '../src/core/engines/spawn.mjs';
+import { superviseSpawn, missingOnWorker } from '../src/core/engines/spawn.mjs';
 import { spawnScript } from '../src/core/graph/script-runner.mjs';
 import { installExecutor, isRemoteExecutor, stagingBase, executorKind, executorConfigError, spawnsRemotely } from '../src/core/executor/index.mjs';
 import { withExecutorScope, currentExecutorScope, scopeKey, parseScopeKey } from '../src/core/executor/scope.mjs';
@@ -37,6 +37,31 @@ const base = (over = {}) => ({
 });
 const RUN = { kind: 'run', id: 'r-1' };
 const remote = (registry, fn) => { installExecutor({ kind: 'docker', registry }); return withExecutorScope(RUN, fn); };
+
+test('an engine binary the worker image lacks is refused before the exec, naming the image to fix', POSIX, async () => {
+  const caps = { engines: { claude: { bin: '/usr/local/bin/claude', version: 'x' }, codex: null, gemini: null } };
+  // What the worker reports is the whole truth: absent engine → a message with the fix; present → nothing to say.
+  assert.equal(missingOnWorker({ workerId: 'w-1', capabilities: caps }, '/opt/claude'), null);
+  assert.match(missingOnWorker({ workerId: 'w-1', capabilities: caps }, 'codex'), /worker w-1 has no codex: the codex engine is not in its image \(it has claude\)\. Point the codex worker image .*WORCA_WORKER_IMAGE .*worker\.engines\.codex\.image/);
+  assert.match(missingOnWorker({ workerId: 'w-1', capabilities: caps }, 'C:\\tools\\gemini.cmd'), /has no gemini/);
+  assert.equal(missingOnWorker({ workerId: 'w-1', capabilities: caps }, '/bin/sh'), null, 'not an engine binary: the worker decides');
+  assert.equal(missingOnWorker({ workerId: 'w-1', capabilities: null }, 'codex'), null, 'no capabilities reported: nothing to judge');
+  assert.equal(missingOnWorker(null, 'codex'), null);
+  // Through the seam: the spawn fails at once, cleanup runs, nothing reaches the worker.
+  const session = createLoopbackSession({ workerId: 'w-caps', capabilities: caps });
+  const registry = createLoopbackRegistry({ session });
+  let cleaned = 0;
+  await assert.rejects(
+    () => remote(registry, () => superviseSpawn(base({ file: 'codex', args: ['--version'], displayBin: 'codex', cleanup: () => { cleaned++; } }))),
+    (err) => { assert.match(err.message, /Failed to spawn codex: worker w-caps has no codex/); assert.equal(err.code, 'EWORKERNOBIN'); return true; });
+  assert.equal(cleaned, 1);
+  assert.equal(session.specs.length, 0, 'no exec was sent');
+  // The binary the image has runs as before.
+  const sh = script('echo from-worker');
+  const lines = [];
+  const r = await remote(registry, () => superviseSpawn(base({ file: sh, args: [], displayBin: 'sh', onStdoutLine: (l) => lines.push(l) })));
+  assert.deepEqual([r.code, lines], [0, ['from-worker']]);
+});
 
 test('scope helpers: normalization, keys, and the async context', async () => {
   assert.equal(currentExecutorScope(), null);

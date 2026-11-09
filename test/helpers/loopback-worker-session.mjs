@@ -5,11 +5,12 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
-export function createLoopbackSession({ workerId = 'w-loopback' } = {}) {
+export function createLoopbackSession({ workerId = 'w-loopback', capabilities = null } = {}) {
   const live = new Map();   // exec id -> { child, handlers }
   let n = 0;
   const session = {
     workerId,
+    capabilities,   // what a real worker's hello carries ({ engines: { claude: { bin, version } | null, … } }); null = unknown
     specs: [],      // every exec spec received, in order
     signals: [],    // every [id, sig] received
     exec(spec, h) {

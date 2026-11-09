@@ -6,13 +6,10 @@
 import { execFile } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';
-import { ENGINE_CLIS } from '../core/engines/cli-specs.mjs';
+import { ENGINE_CLIS, DEFAULT_ENGINE_BINS } from '../core/engines/cli-specs.mjs';
 
-/** The binary name each engine's adapter spawns when nothing overrides it. */
-export const DEFAULT_BINS = Object.freeze({
-  claude: 'claude', codex: 'codex', copilot: 'copilot', cursor: 'cursor-agent',
-  gemini: 'gemini', qwen: 'qwen', goose: 'goose', opencode: 'opencode',
-});
+/** The binary name each engine's adapter spawns when nothing overrides it (cli-specs.mjs). */
+export const DEFAULT_BINS = DEFAULT_ENGINE_BINS;
 
 const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };
 

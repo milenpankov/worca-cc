@@ -108,7 +108,7 @@ import { createClaudeNormalizer } from './engines/claude-events.mjs';
 import { cachedFreeDailyCounts } from './openrouter-free.mjs';
 import { withBillTo, currentBillTo } from './billing.mjs';
 import { withExecutorScope } from './executor/scope.mjs';
-import { releaseWorker } from './executor/index.mjs';
+import { releaseWorker, isRemoteExecutor, currentExecutor } from './executor/index.mjs';
 import { bridgedModelRefusal } from './executor/gates.mjs';
 import { claimRunDir, claimRunExtras, shareFailureReason } from './agent-pool.mjs';
 import { brokerEnabled, brokerEngineRefusal, brokerInfo, personSlots } from './broker-client.mjs';
@@ -3745,7 +3745,12 @@ export class RunHarness extends EventEmitter {
     const name = this.claude.engine || 'claude';
     if (name === 'claude') return null;
     const adapter = getEngine(name);
-    if (!this.claude.mock && typeof adapter.preflight === 'function') {
+    if (!this.claude.mock && isRemoteExecutor()) {
+      // The engine runs on its worker image, not here: a controller-side preflight (binary present, signed in)
+      // would only report what the controller image lacks. The worker refuses a binary it does not have at the
+      // first spawn (engines/spawn.mjs missingOnWorker), with the image to fix named.
+      if (!quiet) this._log('orchestrator', 'info', `engine ${name}: runs on the ${name} worker image (WORCA_EXECUTOR=${currentExecutor().kind}); not checked on the controller`);
+    } else if (!this.claude.mock && typeof adapter.preflight === 'function') {
       const r = await adapter.preflight({ ...(this.claude.bin ? { bin: this.claude.bin } : {}),
         ...(name === 'codex' ? { signIn: await this._codexNeedsSignIn() } : {}),
         ...(name === 'opencode' ? { defaultModel: await this._opencodeOnDefaultModel(), envScrub: !!guardrails?.envScrub,

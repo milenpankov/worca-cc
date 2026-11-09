@@ -22,6 +22,29 @@ import { withoutProxyLogin } from '../env-proxy.mjs';
 import { testWorkerCap } from '../settings.mjs';
 import { sessionFor, spawnsRemotely } from '../executor/index.mjs';
 import { createRemoteChild } from '../executor/remote-child.mjs';
+import { DEFAULT_ENGINE_BINS } from './cli-specs.mjs';
+
+const ENGINE_BIN_NAMES = new Set(Object.values(DEFAULT_ENGINE_BINS));
+const binName = (p) => String(p).split(/[\\/]/).pop().replace(/\.(exe|cmd|bat)$/i, '');   // either separator: a worker may report a Windows path
+
+/**
+ * Why `exe` cannot run on this worker, or null. A worker's hello lists the engine binaries its
+ * image has (worker/capabilities.mjs); an engine binary absent from that list would only die
+ * with ENOENT on the far side, so say so here, naming the fix. Anything that is not an engine
+ * binary (sh, node, a script node's command) is not judged — the worker decides.
+ */
+export function missingOnWorker(session, exe) {
+  const engines = session?.capabilities?.engines;
+  if (!engines || typeof engines !== 'object') return null;
+  const want = binName(exe);
+  if (!ENGINE_BIN_NAMES.has(want)) return null;
+  const present = Object.values(engines).filter(Boolean).map((c) => c?.bin && binName(c.bin)).filter(Boolean);
+  if (present.includes(want)) return null;
+  const engine = Object.entries(DEFAULT_ENGINE_BINS).find(([, b]) => b === want)?.[0] || want;
+  const has = present.length ? `has ${present.join(', ')}` : 'reports no engine binary';
+  return `worker ${session.workerId || '?'} has no ${want}: the ${engine} engine is not in its image (it ${has}). `
+    + `Point the ${engine} worker image at one that ships it: WORCA_WORKER_IMAGE (Compose) or worker.engines.${engine}.image (Helm).`;
+}
 
 // Grace between the abort SIGTERM and the SIGKILL escalation. Claude Code shuts
 // down synchronously (fsync'd ~/.claude.json saves); a SIGKILL that lands inside
@@ -264,6 +287,10 @@ function superviseLocal(o, session = null) {
         // A `{dir, writable}` entry is one the agent also writes into (Copilot's usage file).
         for (const d of [stagedDir].flat()) if (d) shareWithAgent(typeof d === 'string' ? d : d.dir, agentId, { stopAt: join(worcaHome(), 'tmp'), writable: typeof d === 'object' && d.writable === true });
         ({ file: exe, args: argv, env: childEnv } = agentSpawn(exe, argv, childEnv, agentId, agentHome ? { home: agentHome(agentId) } : {}));
+      }
+      if (session) {
+        const missing = missingOnWorker(session, exe);
+        if (missing) throw Object.assign(new Error(missing), { code: 'EWORKERNOBIN', errorClass: 'auth' });
       }
       child = session
         ? createRemoteChild(session, { file: exe, args: argv, cwd, env: childEnv ?? { ...process.env }, stdin, displayBin })
