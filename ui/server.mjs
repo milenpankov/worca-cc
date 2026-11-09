@@ -9286,7 +9286,7 @@ async function startAskTurn({ threadId: id, thread, ctx, model, effort, text, fi
   turn.on('error', () => settleJob('error'));
   // Fire-and-forget with a backstop (startAgentGen shape) — run() never throws; scoped to this thread's worker.
   Promise.resolve()
-    .then(() => withExecutorScope({ kind: 'chat', id }, () => turn.run()))
+    .then(() => withExecutorScope({ kind: 'chat', id, engine: ASK_ENGINES.includes(modelEngine) ? modelEngine : 'claude' }, () => turn.run()))
     .catch((err) => {
       console.error(`[worca-ui] ask turn crashed: ${err && err.message ? err.message : err}`);
       settleJob('error');

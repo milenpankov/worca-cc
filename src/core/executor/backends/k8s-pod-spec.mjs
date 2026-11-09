@@ -20,6 +20,9 @@ export const LABEL_NAME = 'app.kubernetes.io/name';
 export const LABEL_COMPONENT = 'app.kubernetes.io/component';
 export const LABEL_MANAGED_BY = 'app.kubernetes.io/managed-by';
 export const LABEL_INSTANCE = 'app.kubernetes.io/instance';
+/** Worca's own instance label: what the backend lists and reaps by. The standard `app.kubernetes.io/*` name and
+ *  instance labels belong to whoever wrote the template (a Helm chart selects on them in its NetworkPolicies). */
+export const LABEL_WORCA_INSTANCE = 'worca.dev/instance';
 export const LABEL_SCOPE = 'worca.dev/scope';
 export const LABEL_ENGINE = 'worca.dev/engine';
 export const LABEL_BOOT = 'worca.dev/boot';
@@ -129,12 +132,14 @@ export function renderPodSpec({
   manifest.metadata = isObj(manifest.metadata) ? manifest.metadata : {};
   manifest.metadata.name = name || podName(scope, now);
   delete manifest.metadata.generateName;
+  const own = isObj(manifest.metadata.labels) ? manifest.metadata.labels : {};
   manifest.metadata.labels = {
-    ...(isObj(manifest.metadata.labels) ? manifest.metadata.labels : {}),
-    [LABEL_NAME]: 'worca',
+    [LABEL_NAME]: 'worca',                                  // defaults for a bare template; the template's own win
+    [LABEL_INSTANCE]: scopeLabel(instanceId || 'worca'),
+    ...own,
     [LABEL_COMPONENT]: 'worker',
     [LABEL_MANAGED_BY]: 'worca',
-    [LABEL_INSTANCE]: scopeLabel(instanceId || 'worca'),
+    [LABEL_WORCA_INSTANCE]: scopeLabel(instanceId || 'worca'),
     [LABEL_SCOPE]: scopeLabel(key),
     [LABEL_ENGINE]: scopeLabel(engine || 'unknown'),
     ...(bootId ? { [LABEL_BOOT]: scopeLabel(bootId) } : {}),
@@ -158,5 +163,5 @@ export function renderPodSpec({
 
 /** The label selector that finds this controller instance's worker pods. */
 export function workerSelector(instanceId = 'worca') {
-  return `${LABEL_MANAGED_BY}=worca,${LABEL_COMPONENT}=worker,${LABEL_INSTANCE}=${scopeLabel(instanceId || 'worca')}`;
+  return `${LABEL_MANAGED_BY}=worca,${LABEL_COMPONENT}=worker,${LABEL_WORCA_INSTANCE}=${scopeLabel(instanceId || 'worca')}`;
 }

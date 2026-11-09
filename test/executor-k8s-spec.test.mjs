@@ -88,8 +88,14 @@ test('renderPodSpec: keeps every template field, sets only its own, and leaves t
   assert.deepEqual(m.metadata.labels, {
     team: 'platform',
     'app.kubernetes.io/name': 'worca', 'app.kubernetes.io/component': 'worker', 'app.kubernetes.io/managed-by': 'worca',
-    'app.kubernetes.io/instance': 'worca', 'worca.dev/scope': 'run_Run_42_Alpha', 'worca.dev/engine': 'claude', 'worca.dev/boot': 'ctl-1',
+    'app.kubernetes.io/instance': 'worca', 'worca.dev/instance': 'worca', 'worca.dev/scope': 'run_Run_42_Alpha', 'worca.dev/engine': 'claude', 'worca.dev/boot': 'ctl-1',
   });
+  // A chart's template carries its own standard labels, and its NetworkPolicies select on them: they stay.
+  const charted = template();
+  charted.metadata.labels = { ...charted.metadata.labels, 'app.kubernetes.io/name': 'my-worca', 'app.kubernetes.io/instance': 'release-1', 'app.kubernetes.io/component': 'something' };
+  const c = renderPodSpec({ ...base(), template: charted, instanceId: 'worca-prod' }).metadata.labels;
+  assert.deepEqual([c['app.kubernetes.io/name'], c['app.kubernetes.io/instance']], ['my-worca', 'release-1'], "the template's name and instance are not overwritten");
+  assert.deepEqual([c['worca.dev/instance'], c['app.kubernetes.io/component'], c['app.kubernetes.io/managed-by']], ['worca-prod', 'worker', 'worca'], 'what the backend lists by is always its own');
   assert.deepEqual(m.metadata.annotations, { 'example.com/owner': 'ops', 'worca.dev/scope': 'run:Run_42/Alpha' });
   // template fields survive
   assert.equal(m.spec.serviceAccountName, 'worca-worker');
@@ -140,7 +146,8 @@ test('renderPodSpec: a 200-char chat id yields a valid name and labels; a templa
   assert.match(m.metadata.name, DNS_1123);
   for (const v of Object.values(m.metadata.labels)) { assert.ok(v.length <= 63, v); assert.match(v, LABEL_VALUE); }
   assert.equal(m.metadata.annotations['worca.dev/scope'], `chat:${id}`, 'the full scope is in the annotation');
-  assert.equal(m.metadata.labels['app.kubernetes.io/instance'], 'tenant-A');
+  assert.equal(m.metadata.labels['app.kubernetes.io/instance'], 'tenant-A', 'a bare template gets the instance id as a default');
+  assert.equal(m.metadata.labels['worca.dev/instance'], 'tenant-A');
   const bad = template(); bad.spec.containers = [{ name: 'main', image: 'x' }];
   assert.throws(() => renderPodSpec({ ...base(), template: bad }), /no container named "worker"/);
   assert.throws(() => renderPodSpec({ ...base(), template: null }), /JSON object/);
@@ -181,7 +188,7 @@ test('workerEnvFor: the assignment (token via env), the fixed paths, idle, and t
 });
 
 test('workerSelector names the managed-by/component/instance labels', () => {
-  assert.equal(workerSelector('worca'), 'app.kubernetes.io/managed-by=worca,app.kubernetes.io/component=worker,app.kubernetes.io/instance=worca');
+  assert.equal(workerSelector('worca'), 'app.kubernetes.io/managed-by=worca,app.kubernetes.io/component=worker,worca.dev/instance=worca');
 });
 
 test('classifyPod: running, exited, fatal image waits, unschedulable and plain pending', () => {

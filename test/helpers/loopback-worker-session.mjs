@@ -64,15 +64,18 @@ export function createLoopbackSession({ workerId = 'w-loopback', capabilities = 
  *  the releases and the touches. */
 export function createLoopbackRegistry({ session = createLoopbackSession(), fail = null } = {}) {
   const acquired = [];
+  const asked = [];      // per acquire: { engine } — what the spawn named
   const released = [];
   const touched = [];
   return {
     session,
     acquired,
+    asked,
     released,
     touched,
-    async acquire(scope) {
+    async acquire(scope, { engine = null } = {}) {
       acquired.push(scope);
+      asked.push({ engine });
       if (fail) throw fail;
       return session;
     },

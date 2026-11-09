@@ -216,16 +216,20 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
   }
 
   /** Resolve with the pod once it is Running; reject on anything that means it never will be. */
-  function awaitRunning(initial, name, image) {
+  function awaitRunning(initial, name, image, signal = null) {
     const ctl = new AbortController();
     let settled = false;
     let last = null;
     const unschedulable = new Set();
     return new Promise((resolve, reject) => {
-      const finish = (ok, value) => { if (settled) return; settled = true; clearTimeout(timer); ctl.abort(); (ok ? resolve : reject)(value); };
+      const finish = (ok, value) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); ctl.abort(); (ok ? resolve : reject)(value); };
+      // The registry gave up on this start (nobody waits for it any more): stop watching; start() deletes the pod.
+      const onAbort = () => finish(false, Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      if (signal?.aborted) { settled = true; reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); return; }
+      signal?.addEventListener('abort', onAbort, { once: true });
       const rejectWithLog = async (headline) => {
         if (settled) return;
-        settled = true; clearTimeout(timer); ctl.abort();
+        settled = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); ctl.abort();
         let tail = null;
         try { tail = await client.podLog(namespace, name, { tailLines: LOG_TAIL_LINES, container: 'worker' }); } catch (err) { log(`log of ${name}: ${err.message}`); }
         const trimmed = typeof tail === 'string' ? tail.trim() : '';
@@ -262,10 +266,17 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
     kind: 'kubernetes',
     bootId,
 
-    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs = null, env: extra = {}, prewarmed = null } = {}) {
+    /** What tells a scope's workers apart: the image an engine resolves to (one image for every engine = one worker). */
+    async classFor(engine) {
+      const e = engine || await engineFor();
+      const { variant, overrides } = settingsFor(e);
+      return resolveImage({ pattern: imagePattern, engine: e, variant, version, overrides });
+    },
+
+    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs = null, env: extra = {}, prewarmed = null, engine: asked = null, signal = null } = {}) {
       if (!scope?.kind || !scope?.id || !scopeKey || !workerId) throw startFailure('start: scope, scopeKey and workerId are required');
       const workerEnv = workerEnvFor({ controllerUrl, token, scopeKey, workerId, idleMs, controllerEnv: env, extra });
-      const engine = await engineFor();
+      const engine = asked || await engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
       const { variant: engineVariant, resources: engineResources, overrides } = settingsFor(engine);
       const image = resolveImage({ pattern: imagePattern, engine, variant: engineVariant, version, overrides });
       let pod; let name;
@@ -281,7 +292,7 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
       log(`pod ${name} created for ${scopeKey} (${image})`);
       let running;
       try {
-        running = await awaitRunning(pod, name, image);
+        running = await awaitRunning(pod, name, image, signal);
       } catch (err) {
         client.deletePod(namespace, name, { gracePeriodSeconds: 0 }).catch((e) => log(`cleanup of ${name}: ${e.message}`));
         throw err;

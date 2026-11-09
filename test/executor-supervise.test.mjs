@@ -8,7 +8,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { useTempHome } from './helpers/temp-home.mjs';
 import { createLoopbackRegistry, createLoopbackSession } from './helpers/loopback-worker-session.mjs';
-import { superviseSpawn, missingOnWorker } from '../src/core/engines/spawn.mjs';
+import { superviseSpawn, missingOnWorker, engineOfSpawn } from '../src/core/engines/spawn.mjs';
+import { CODEX_CLI } from '../src/core/engines/cli-specs.mjs';
+import { installExecutorFromEnv } from '../src/core/executor/controller.mjs';
 import { spawnScript } from '../src/core/graph/script-runner.mjs';
 import { installExecutor, isRemoteExecutor, stagingBase, executorKind, executorConfigError, spawnsRemotely } from '../src/core/executor/index.mjs';
 import { withExecutorScope, currentExecutorScope, scopeKey, parseScopeKey } from '../src/core/executor/scope.mjs';
@@ -63,11 +65,58 @@ test('an engine binary the worker image lacks is refused before the exec, naming
   assert.deepEqual([r.code, lines], [0, ['from-worker']]);
 });
 
+test("a spawn names its engine to the registry; a worker that cannot start keeps its recovery class; a stop stays an abort", POSIX, async () => {
+  assert.equal(engineOfSpawn({ cli: CODEX_CLI, file: '/opt/anything' }), 'codex', "the adapter's CLI spec names the engine");
+  assert.equal(engineOfSpawn({ file: '/usr/local/bin/cursor-agent' }), 'cursor', 'else the binary name does');
+  assert.equal(engineOfSpawn({ file: '/bin/sh' }), null, 'a script is no engine');
+  const sh = script('echo hi');
+  const registry = createLoopbackRegistry();
+  await remote(registry, () => superviseSpawn(base({ file: sh, args: [], cli: CODEX_CLI })));
+  await withExecutorScope({ ...RUN, engine: 'gemini' }, () => superviseSpawn(base({ file: sh, args: [] })));
+  assert.deepEqual(registry.asked, [{ engine: 'codex' }, { engine: 'gemini' }], "the spawn's own engine, else the scope's");
+  // Six of the seven adapters build a fresh Error in spawnError: the class and code of what it wraps must survive it.
+  const dropping = (err, prefix) => new Error(`${prefix}: ${err.message}`);
+  const failing = createLoopbackRegistry({ fail: Object.assign(new Error('cannot start a worker for run:r-1: no image'), { code: 'EWORKERSTART', errorClass: 'network' }) });
+  await assert.rejects(() => remote(failing, () => superviseSpawn(base({ file: sh, args: [], spawnError: dropping }))), (e) => {
+    assert.match(e.message, /Failed to start a worker for fake: cannot start a worker/);
+    assert.equal(e.errorClass, 'network', 'retried or paused by the failure policy, not failed hard');
+    assert.equal(e.code, 'EWORKERSTART');
+    return true;
+  });
+  const caps = { engines: { claude: { bin: '/usr/local/bin/claude', version: 'x' }, codex: null } };
+  const lacking = createLoopbackRegistry({ session: createLoopbackSession({ workerId: 'w-c', capabilities: caps }) });
+  await assert.rejects(() => remote(lacking, () => superviseSpawn(base({ file: 'codex', args: [], displayBin: 'codex', spawnError: dropping }))), (e) => {
+    assert.equal(e.errorClass, 'auth', 'a missing engine is something the person fixes: paused with the fix named');
+    assert.equal(e.code, 'EWORKERNOBIN');
+    return true;
+  });
+  // Stopped while the worker was starting: the registry's AbortError passes through unwrapped, cleanup still runs.
+  const stopped = createLoopbackRegistry({ fail: Object.assign(new Error('aborted'), { name: 'AbortError' }) });
+  let cleaned = 0;
+  await assert.rejects(() => remote(stopped, () => superviseSpawn(base({ file: sh, args: [], spawnError: dropping, cleanup: () => { cleaned++; } }))), { name: 'AbortError', message: 'aborted' });
+  assert.equal(cleaned, 1);
+  await assert.rejects(() => remote(stopped, () => spawnScript({ file: sh, args: [], cwd: tmpdir(), env: process.env, timeoutMs: 5000, onLine: () => {} })), { name: 'AbortError' });
+});
+
+test('a container executor without WORCA_CONTROLLER_URL refuses to install: workers cannot dial the controller on loopback', async () => {
+  const saved = Object.fromEntries(['WORCA_EXECUTOR', 'WORCA_CONTROLLER_URL', 'WORCA_EXECUTOR_BACKEND'].map((k) => [k, process.env[k]]));
+  process.env.WORCA_EXECUTOR = 'kubernetes';
+  delete process.env.WORCA_CONTROLLER_URL; delete process.env.WORCA_EXECUTOR_BACKEND;
+  try {
+    await assert.rejects(() => installExecutorFromEnv({ log: () => {} }), /WORCA_CONTROLLER_URL is not set: with WORCA_EXECUTOR=kubernetes .* ws:\/\/worca:4319/);
+    assert.equal(isRemoteExecutor(), false, 'nothing was installed');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
 test('scope helpers: normalization, keys, and the async context', async () => {
   assert.equal(currentExecutorScope(), null);
   assert.equal(scopeKey({ kind: 'chat', id: ' t1 ' }), 'chat:t1');
   assert.equal(scopeKey({ kind: 'job', id: 'x' }), null);
   assert.deepEqual(parseScopeKey('run:abc:def'), { kind: 'run', id: 'abc:def' });
+  assert.equal(scopeKey({ kind: 'run', id: 'r', engine: 'codex' }), 'run:r', "the scope's engine is a hint, not part of its identity");
+  assert.deepEqual(await withExecutorScope({ kind: 'run', id: 'r', engine: ' codex ' }, () => currentExecutorScope()), { kind: 'run', id: 'r', engine: 'codex' });
   assert.equal(parseScopeKey('nope'), null);
   await withExecutorScope(RUN, async () => {
     await new Promise((r) => setTimeout(r, 1));

@@ -5,7 +5,9 @@ By default Worca is one process: the orchestrator spawns every engine CLI (`clau
 **controller** — keeps the scheduler, the database, the UI and the questions, and the processes
 run in **worker containers**: one per run, one per chat thread, created when the first process is
 needed and removed when the run ends or the thread has been idle. Nothing but the controller
-runs while Worca is idle; ten concurrent runs are ten worker containers.
+runs while Worca is idle; ten concurrent runs are ten worker containers. A run whose processes
+need two worker images — its agents on Cursor, its title and PR description on Claude Code —
+gets one worker per image, and they end together.
 
 ```
              UI :4317 (people)               workers :4319 (container network only, token auth)
@@ -32,6 +34,14 @@ runs while Worca is idle; ten concurrent runs are ten worker containers.
   one-time token, says which scope it serves and which engines it found, and executes what it is
   sent: the complete argv, cwd and env, stdin, signals. Output comes back line by line with flow
   control. A worker never opens the database (`WORCA_NO_DB=1` in its image).
+- **Which image.** Every engine spawn names its engine, and the backend resolves it to a worker
+  image (`…-claude`, `…-codex`, or one `…-all` for every engine). A scope's workers are told apart
+  by that image: the same image is the same worker, another image is another worker. A script node
+  names no engine and runs on the worker of the run's own engine. A worker that lacks the binary
+  it is asked for refuses the spawn, naming the image setting to fix; the run pauses on it.
+- **Starting and stopping.** Callers that need the same worker while it starts all wait on the one
+  start; if it fails, each of them gets the failure. Stopping or pausing a run ends its wait at
+  once, and a container or pod that arrives after nobody waits for it is removed.
 - **Files.** Worker and controller see the same files at the same paths: the run's checkout,
   the pipeline's outputs and verdicts, staged prompts (`<worcaHome>/tmp/stage`), and the
   worker's HOME (`<worcaHome>/worker-homes/<kind>/<id>`), where the engine keeps the run's
@@ -49,7 +59,7 @@ runs while Worca is idle; ten concurrent runs are ten worker containers.
 | `WORCA_EXECUTOR` | controller | `local` (default), `docker`, `kubernetes` |
 | `WORCA_EXECUTOR_BACKEND=in-process` | controller | the worker runs inside the server process over a real socket, no container: for trying the path on one machine, and for tests |
 | `WORCA_WORKER_PORT` | controller | the worker listener (default 4319); never publish it to people |
-| `WORCA_CONTROLLER_URL` | controller | the URL workers are told to connect to (`ws://<service>:4319`); default: this listener |
+| `WORCA_CONTROLLER_URL` | controller | the URL workers are told to connect to (`ws://<service>:4319`). **Required** with `docker` and `kubernetes` (the Compose overlay and the chart set it): a worker in another container cannot dial the controller's loopback, and the server refuses to start without it |
 | `WORCA_WORKER_MAX` | controller | containers at once (default 20); runs are also bounded by Settings › Runs |
 | `WORCA_WORKER_CHAT_IDLE_MS` | controller | a chat worker leaves after this long with nothing to run (default 15 min) |
 | `WORCA_WORKER_START_TIMEOUT_MS` | controller | how long a worker may take to connect (default 2 min) |
@@ -104,6 +114,10 @@ workers use the token or the broker.
 - **The credential broker** must be reachable from the worker network (`WORCA_BROKER_URL` names
   a service, not loopback).
 - **Agent isolation** (`WORCA_AGENT_USER`, sudo) is not used on a worker: the container is the isolation.
+- **Container-local paths.** The controller composes each spawn's environment in its own container. On the
+  worker, that container's own CA bundle and cache directories replace the controller's, and a CA file path that
+  does not exist there is dropped. A corporate CA must be mounted in the workers too (`WORCA_CA_CERT_FILE`; the
+  Docker backend replicates the controller's mounts, on Kubernetes add it to the worker pod template).
 
 ## Backends
 

@@ -179,8 +179,10 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   return {
     kind: 'docker',
     template,
-    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs }) {
-      const engine = engineFor();
+    /** What tells this scope's workers apart: the image an engine runs on (one image for every engine = one worker). */
+    classFor(engine) { return workerImageFor(engine || engineFor(), { pattern, controllerImage: template.image }) || 'none'; },
+    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine: asked = null }) {
+      const engine = asked || engineFor();   // the spawn's engine (the run's, the chat's); the install default only when none is named
       const image = workerImageFor(engine, { pattern, controllerImage: template.image });
       if (!image) throw new Error('no worker image: set WORCA_WORKER_IMAGE');
       const name = `worca-worker-${scope.kind}-${String(scope.id).replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40)}-${workerId.slice(-8)}`;

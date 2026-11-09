@@ -15,13 +15,13 @@ export function createInProcessBackend({ homeRoot, capabilities = null, log = ()
     kind: 'in-process',
     started,
     get live() { return [...workers.values()]; },
-    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs }) {
-      if (beforeStart) await beforeStart({ scope, scopeKey, workerId });
+    async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine = null, signal = null }) {
+      if (beforeStart) await beforeStart({ scope, scopeKey, workerId, engine, signal });
       const home = join(homeRoot, 'worker-homes', scope.kind, scope.id);
       mkdirSync(home, { recursive: true });
       const caps = capabilities ?? await probeCapabilities({ engines: [] });
       const w = startWorker({ url: controllerUrl, token, scope, workerId, home, capabilities: caps, idleMs, log });
-      const handle = { workerId, scopeKey, home, worker: w, done: w.done };
+      const handle = { workerId, scopeKey, engine, home, worker: w, done: w.done };
       workers.set(workerId, handle);
       started.push(handle);
       w.done.then(() => workers.delete(workerId));

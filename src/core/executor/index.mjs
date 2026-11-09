@@ -57,11 +57,13 @@ export function isRemoteExecutor() {
  * under local, and null for a spawn outside any scope (an auxiliary spawn stays on the
  * controller). Rejects when no worker could be acquired.
  */
-export async function sessionFor({ signal } = {}) {
+export async function sessionFor({ signal, engine = null } = {}) {
   if (!installed) return null;
   const scope = currentExecutorScope();
   if (!scope) return null;
-  return installed.registry.acquire(scope, { signal });
+  // The spawn's own engine picks the worker (its image); a spawn that names none — a script node — runs on the
+  // scope's engine's worker, or on whichever worker the scope already has.
+  return installed.registry.acquire(scope, { signal, engine: engine || scope.engine || null });
 }
 
 /** True when the spawn in this async context would go to a worker. */

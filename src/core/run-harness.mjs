@@ -1507,7 +1507,7 @@ export class RunHarness extends EventEmitter {
    * the run, so under a remote executor it goes to the run's worker. Evaluated per spawn — the
    * id exists once createPipeline has run, which is before the first agent or script spawns.
    */
-  _executorScope = () => (this.pipeline?.id ? { kind: 'run', id: this.pipeline.id } : null);
+  _executorScope = () => (this.pipeline?.id ? { kind: 'run', id: this.pipeline.id, engine: this.claude?.engine || 'claude' } : null);
 
   /**
    * Release the run's worker (no-op under the local executor). The worker's HOME on the shared

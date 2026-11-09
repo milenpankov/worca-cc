@@ -56,6 +56,13 @@ export async function installExecutorFromEnv({ log = (l) => console.log(l), port
   if (cfgErr) throw new Error(cfgErr);
   const kind = executorKind();
   if (kind === 'local') return { kind, registry: null };
+  // Workers in other containers are told where to connect. Without WORCA_CONTROLLER_URL that would be this
+  // listener's own loopback, which no container can dial: every run would time out with no hint. Refuse now.
+  // (The in-process test backend runs its worker in this process, where loopback is right.)
+  const inProcess = String(process.env.WORCA_EXECUTOR_BACKEND || '').trim().toLowerCase() === 'in-process';
+  if (!inProcess && !String(process.env.WORCA_CONTROLLER_URL || '').trim()) {
+    throw new Error(`WORCA_CONTROLLER_URL is not set: with WORCA_EXECUTOR=${kind} the workers run in other containers and cannot reach this process on loopback. Set it to the address they dial, e.g. ws://worca:4319 (the Compose service) or ws://<service>.<namespace>.svc:4319`);
+  }
   // One boot id for the registry and the backend: a worker container's label names this controller process.
   const bootId = `ctl-${randomUUID()}`;
   const backend = await createBackend(kind, { log: (l) => log(`[worca-ui] executor: ${l}`), homeRoot: worcaHome(), bootId });

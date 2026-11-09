@@ -112,7 +112,7 @@ async function fakeApi() {
     seed(name, { instance = 'worca', workerId = `w-${name}`, scope = `run:${name}` } = {}) {
       pods.set(name, {
         metadata: { name, namespace: 'agents', uid: `uid-${name}`, resourceVersion: String(++rv), creationTimestamp: '2026-11-07T10:00:00Z',
-          labels: { 'app.kubernetes.io/managed-by': 'worca', 'app.kubernetes.io/component': 'worker', 'app.kubernetes.io/instance': instance, 'worca.dev/engine': 'claude' },
+          labels: { 'app.kubernetes.io/managed-by': 'worca', 'app.kubernetes.io/component': 'worker', 'app.kubernetes.io/instance': 'some-release', 'worca.dev/instance': instance, 'worca.dev/engine': 'claude' },
           annotations: { 'worca.dev/scope': scope } },
         spec: { containers: [{ name: 'worker', image: 'img', env: [{ name: 'WORCA_WORKER_ID', value: workerId }] }] }, status: { phase: 'Running' },
       });
@@ -159,7 +159,7 @@ test('happy path: the pod is created from the template, resolves on Running, and
   assert.deepEqual(pod.spec.nodeSelector, { pool: 'agents' });
   assert.equal(pod.spec.restartPolicy, 'Never');
   assert.equal(pod.spec.activeDeadlineSeconds, 86400);
-  assert.equal(pod.metadata.labels['app.kubernetes.io/instance'], 'worca');
+  assert.equal(pod.metadata.labels['worca.dev/instance'], 'worca');
   assert.equal(pod.metadata.labels['worca.dev/boot'], 'ctl-test');
   assert.equal(pod.metadata.annotations['worca.dev/scope'], 'run:r1');
   // still pending: the watch is open and nothing resolved
@@ -303,6 +303,26 @@ test('a watch the server ends (its timeoutSeconds) reconnects from the last reso
   assert.equal((await p).name, pod.metadata.name);
 });
 
+test("the engine a start names picks the image; an abandoned start stops watching and deletes its pod", async (t) => {
+  const { fake, backend } = await setup(t);
+  assert.equal(await backend.classFor('codex'), 'ghcr.io/sinishadjukic/worca-worker:9.9.9-codex');
+  assert.equal(await backend.classFor(null), 'ghcr.io/sinishadjukic/worca-worker:9.9.9-claude', 'no engine named: the install default');
+  const p = backend.start(startArgs({ engine: 'codex' }));
+  const pod = await fake.nextCreated();
+  assert.equal(pod.spec.containers[0].image, 'ghcr.io/sinishadjukic/worca-worker:9.9.9-codex', "the run's engine, not the install default");
+  assert.equal(pod.metadata.labels['worca.dev/engine'], 'codex');
+  fake.update(pod.metadata.name, { phase: 'Running' });
+  assert.equal((await p).engine, 'codex');
+  // The registry gave up on a start (the run was stopped while the pod was Pending).
+  const ctl = new AbortController();
+  const q = backend.start(startArgs({ workerId: 'w-run-0002', signal: ctl.signal })).then(() => null, (e) => e);
+  const pending = await fake.nextCreated();
+  ctl.abort();
+  assert.equal((await q).name, 'AbortError');
+  for (let i = 0; i < 100 && !fake.deletes.some((d) => d.name === pending.metadata.name); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(fake.deletes.some((d) => d.name === pending.metadata.name), 'the pod nobody waits for is deleted');
+});
+
 test('listWorkers returns handles for this instance only', async (t) => {
   const { fake, backend } = await setup(t);
   fake.seed('worca-w-run-a-1', { workerId: 'w-run-aaaa', scope: 'run:a' });
@@ -313,7 +333,7 @@ test('listWorkers returns handles for this instance only', async (t) => {
     ['w-chat-bbbb', 'worca-w-chat-b-1', 'chat:b', 'claude', 'uid-worca-w-chat-b-1'],
     ['w-run-aaaa', 'worca-w-run-a-1', 'run:a', 'claude', 'uid-worca-w-run-a-1'],
   ]);
-  assert.equal(fake.calls.at(-1).query.labelSelector, 'app.kubernetes.io/managed-by=worca,app.kubernetes.io/component=worker,app.kubernetes.io/instance=worca');
+  assert.equal(fake.calls.at(-1).query.labelSelector, 'app.kubernetes.io/managed-by=worca,app.kubernetes.io/component=worker,worca.dev/instance=worca');
   await backend.remove(handles[0], { reason: 'orphan at boot' });
   assert.equal(fake.deletes[0].grace, '30');
 });

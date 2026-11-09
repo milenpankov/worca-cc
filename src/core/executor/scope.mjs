@@ -10,12 +10,14 @@ const als = new AsyncLocalStorage();
 
 export const SCOPE_KINDS = Object.freeze(['run', 'chat']);
 
-/** A usable scope `{ kind: 'run'|'chat', id }`, or null. */
+/** A usable scope `{ kind: 'run'|'chat', id, engine? }`, or null. `engine` is the scope's own engine (the run's,
+ *  the chat turn's): which worker image a spawn that names no engine of its own — a script node — runs on. */
 export function normalizeScope(scope) {
   if (!scope || typeof scope !== 'object') return null;
   const kind = SCOPE_KINDS.includes(scope.kind) ? scope.kind : null;
   const id = typeof scope.id === 'string' ? scope.id.trim() : '';
-  return kind && id ? { kind, id } : null;
+  const engine = typeof scope.engine === 'string' && scope.engine.trim() ? scope.engine.trim() : null;
+  return kind && id ? { kind, id, ...(engine ? { engine } : {}) } : null;
 }
 
 /** The scope as one string (`run:<id>`), the form workers echo back in their hello. */

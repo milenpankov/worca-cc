@@ -199,6 +199,10 @@ makes the pushes and pull requests, and agents never see a Git credential. The c
 needs the model credential too for its own small calls (run titles and the like), so the same
 Secret may serve both `secrets.existingSecret` and `worker.credentialsSecret`.
 
+Worker pods carry `worca.dev/instance=<instanceId>` (what the controller lists and reaps by),
+`worca.dev/scope`, `worca.dev/engine` and `worca.dev/boot`; the pod template's own
+`app.kubernetes.io/*` labels are left as the chart wrote them, since its NetworkPolicies select on them.
+
 Other engines take their credential the same way — a variable in `worker.credentialsSecret`
 (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `CURSOR_API_KEY`, `COPILOT_GITHUB_TOKEN`, …): the table and
 the limitation (no interactive sign-in persists on a worker) are in

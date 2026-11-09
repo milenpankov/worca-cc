@@ -201,6 +201,93 @@ test('a hello with the right token and scope is accepted once; a second connecti
   } finally { await reg2.closeAll(); }
 });
 
+test('a scope gets one worker per engine; a spawn that names none uses the one the scope has; release ends them all', async () => {
+  const before = backend.started.length;
+  const claude = await registry.acquire({ ...RUN, engine: 'claude' });
+  const codex = await registry.acquire(RUN, { engine: 'codex' });
+  assert.notEqual(codex, claude, "another engine is another worker (its own image under a container backend)");
+  assert.equal(await registry.acquire(RUN, { engine: 'claude' }), claude);
+  assert.equal(await registry.acquire(RUN, { engine: 'codex' }), codex);
+  assert.equal(await registry.acquire(RUN), claude, 'no engine named (a script node): the worker the scope already has');
+  assert.deepEqual(backend.started.slice(before).map((h) => h.engine), ['claude', 'codex'], 'the backend is told which engine to start');
+  assert.deepEqual(registry.snapshot().map((e) => [e.scope.id, e.engine, e.state]).sort(), [['r-ws', 'claude', 'ready'], ['r-ws', 'codex', 'ready']]);
+  assert.equal(await registry.release(RUN, { reason: 'test' }), true);
+  assert.deepEqual(registry.snapshot(), [], 'both are gone');
+});
+
+test('a backend whose engines share one image keeps one worker per scope', async () => {
+  const b2 = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  b2.classFor = () => 'registry.example/worca-worker:1-all';
+  const reg2 = createWorkerRegistry({ backend: b2, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, log: () => {} });
+  await reg2.listen();
+  try {
+    const a = await reg2.acquire({ kind: 'run', id: 'm' }, { engine: 'claude' });
+    const c = await reg2.acquire({ kind: 'run', id: 'm' }, { engine: 'codex' });
+    assert.equal(c, a);
+    assert.equal(b2.started.length, 1);
+  } finally { await reg2.closeAll(); }
+});
+
+test('every caller waiting on a start that fails is rejected, not only the first', async () => {
+  let fire; const gate = new Promise((r) => { fire = r; });
+  const b = { async start() { await gate; throw new Error('no image'); }, async remove() {}, async listWorkers() { return []; }, describe() { return {}; } };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, log: () => {} });
+  await reg2.listen();
+  try {
+    const first = reg2.acquire({ kind: 'run', id: 'x' }).then(() => null, (e) => e);
+    const second = reg2.acquire({ kind: 'run', id: 'x' }).then(() => null, (e) => e);   // a parallel node of the same run
+    await new Promise((r) => setTimeout(r, 20));
+    fire();
+    for (const e of await Promise.all([first, second])) {
+      assert.match(e?.message || '', /cannot start a worker for run:x: no image/);
+      assert.equal(e.errorClass, 'network');
+    }
+    assert.deepEqual(reg2.snapshot(), []);
+  } finally { await reg2.closeAll(); }
+});
+
+test('a stop while the worker is still starting ends the wait at once; the start goes on only while someone else waits', async () => {
+  const starts = [];      // one per backend.start: { signal, finish }
+  const removed = [];
+  const b = {
+    start({ workerId, signal }) { return new Promise((resolve) => starts.push({ signal, finish: () => resolve({ workerId }) })); },
+    async remove(h, o) { removed.push([h.workerId, o.reason]); }, async listWorkers() { return []; }, describe() { return {}; },
+  };
+  const reg2 = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, log: () => {} });
+  await reg2.listen();
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  try {
+    // The only caller stops: an AbortError now, the backend's own wait is told to stop, and a container that still
+    // arrives is removed.
+    const ctl = new AbortController();
+    const p = reg2.acquire({ kind: 'run', id: 'y' }, { signal: ctl.signal }).then(() => null, (e) => e);
+    await tick();
+    ctl.abort();
+    assert.equal((await p).name, 'AbortError');
+    assert.equal(starts[0].signal.aborted, true);
+    assert.deepEqual(reg2.snapshot(), []);
+    starts[0].finish();
+    await tick();
+    assert.equal(removed.length, 1);
+    assert.equal(removed[0][1], 'start abandoned');
+    // Already stopped: nothing is started at all.
+    await assert.rejects(reg2.acquire({ kind: 'run', id: 'z' }, { signal: ctl.signal }), { name: 'AbortError' });
+    assert.equal(starts.length, 1);
+    // Two callers, one stops: its wait ends, the other's start goes on.
+    const ctl2 = new AbortController();
+    const stopper = reg2.acquire({ kind: 'run', id: 'w' }, { signal: ctl2.signal }).then(() => null, (e) => e);
+    const waiter = reg2.acquire({ kind: 'run', id: 'w' }).then(() => null, (e) => e);
+    await tick();
+    ctl2.abort();
+    assert.equal((await stopper).name, 'AbortError');
+    assert.equal(starts[1].signal.aborted, false, 'someone still waits for this worker');
+    assert.deepEqual(reg2.snapshot().map((e) => e.state), ['starting']);
+    await reg2.release({ kind: 'run', id: 'w' }, { reason: 'test' });
+    assert.match((await waiter).message, /released before it connected/);
+    assert.equal(starts[1].signal.aborted, true, 'a released start stops the backend too');
+  } finally { await reg2.closeAll(); }
+});
+
 test('reapAtBoot removes every worker the backend still lists', async () => {
   const removed = [];
   const b = { async start() { throw new Error('unused'); }, async remove(h, o) { removed.push([h.workerId, o.reason]); }, async listWorkers() { return [{ workerId: 'old-1' }, { workerId: 'old-2' }]; }, describe() { return {}; } };

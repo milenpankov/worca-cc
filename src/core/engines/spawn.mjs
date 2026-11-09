@@ -22,7 +22,7 @@ import { withoutProxyLogin } from '../env-proxy.mjs';
 import { testWorkerCap } from '../settings.mjs';
 import { sessionFor, spawnsRemotely } from '../executor/index.mjs';
 import { createRemoteChild } from '../executor/remote-child.mjs';
-import { DEFAULT_ENGINE_BINS } from './cli-specs.mjs';
+import { DEFAULT_ENGINE_BINS, ENGINE_CLIS } from './cli-specs.mjs';
 
 const ENGINE_BIN_NAMES = new Set(Object.values(DEFAULT_ENGINE_BINS));
 const binName = (p) => String(p).split(/[\\/]/).pop().replace(/\.(exe|cmd|bat)$/i, '');   // either separator: a worker may report a Windows path
@@ -242,13 +242,34 @@ function noteResolved(r) {
   console.warn('[worca] ' + r.note);
 }
 
+/** The engine a spawn belongs to: its adapter's CLI spec, else its binary's name; null for anything else. */
+export function engineOfSpawn({ cli, file } = {}) {
+  for (const [name, spec] of Object.entries(ENGINE_CLIS)) if (spec === cli) return name;
+  const bin = file ? binName(file) : null;
+  return Object.entries(DEFAULT_ENGINE_BINS).find(([, b]) => b === bin)?.[0] ?? null;
+}
+
+/** An adapter's spawnError builds a fresh Error: the recovery class and the code of what it wraps ride along,
+ *  so "no worker could start" (network) and "the worker image lacks this engine" (auth) pause instead of failing hard. */
+function carryClass(out, err) {
+  if (out && err && typeof out === 'object') {
+    if (err.errorClass && !out.errorClass) out.errorClass = err.errorClass;
+    if (err.code && !out.code) out.code = err.code;
+  }
+  return out;
+}
+
 export function superviseSpawn(o) {
   // The executor seam (executor/index.mjs): a spawn inside a run or chat scope under a remote
-  // executor runs on that scope's worker; everything else — the default — spawns here.
+  // executor runs on that scope's worker for its engine; everything else — the default — spawns here.
   if (!spawnsRemotely()) return superviseLocal(o);
-  return sessionFor({ signal: o.signal }).then(
+  return sessionFor({ signal: o.signal, engine: engineOfSpawn(o) }).then(
     (session) => superviseLocal(o, session),
-    (err) => { o.cleanup(); throw o.spawnError(err, `Failed to start a worker for ${o.displayBin}`); },
+    (err) => {
+      o.cleanup();
+      if (err?.name === 'AbortError') throw err;   // stopped while its worker was starting: an abort, as after a spawn
+      throw carryClass(o.spawnError(err, `Failed to start a worker for ${o.displayBin}`), err);
+    },
   );
 }
 
@@ -302,7 +323,7 @@ function superviseLocal(o, session = null) {
       if (ownGroup && typeof child.pid === 'number') trackGroup(child.pid, displayBin);
     } catch (err) {
       cleanup();
-      rejectP(spawnError(withShimHint(err), `Failed to spawn ${displayBin}`));
+      rejectP(carryClass(spawnError(withShimHint(err), `Failed to spawn ${displayBin}`), err));
       return;
     }
     if (stdin != null) {

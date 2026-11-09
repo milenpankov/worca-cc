@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
+import { renderPodSpec } from '../src/core/executor/backends/k8s-pod-spec.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CHART = join(ROOT, 'deploy', 'helm', 'worca');
@@ -303,6 +304,10 @@ test('full render (broker, Ingress, NetworkPolicy, PDB, Secret, projects claim, 
   assert.equal(block.cidr, '0.0.0.0/0');
   assert.deepEqual(block.except, ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.169.254/32']);
   for (const [k, v] of Object.entries(np.spec.podSelector.matchLabels)) assert.equal(pod.metadata.labels[k], v, `the policy's selector label ${k} is on the worker template`);
+  // …and still on the pod the backend creates from it (here the instance id differs from the release name): the
+  // backend must not overwrite a label the policy selects on, or workers could not reach the controller.
+  const created = renderPodSpec({ template: pod, instanceId: 'worca-prod', scope: { kind: 'run', id: 'r1' }, scopeKey: 'run:r1', engine: 'claude', env: {}, image: 'registry.example/worker:1', bootId: 'ctl-x' });
+  for (const [k, v] of Object.entries(np.spec.podSelector.matchLabels)) assert.equal(created.metadata.labels[k], v, `the policy's selector label ${k} survives on the created worker pod`);
   assert.equal(np.spec.podSelector.matchLabels['worca.dev/instance'], 'worca-prod');
 
   const pdb = byKind(all, 'PodDisruptionBudget');
