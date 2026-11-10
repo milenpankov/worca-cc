@@ -359,6 +359,8 @@ Subcommands:
   broker [serve|secrets|revoke --person <email>]
                               The credential broker: holds model keys outside worca's container
                               (docs/credential-broker.md)
+  worker [--check]            A worker: runs agents for a controller in another container
+                              (WORCA_CONTROLLER_URL, WORCA_WORKER_TOKEN; docs/workers.md)
   help                       Print this help (same as --help).
   version                     Print the version (same as --version).
 
@@ -3545,7 +3547,7 @@ async function resolveTeamNote(team, { key, project, name, a }) {
 
 // ── main ──────────────────────────────────────────────────────────────────────────
 
-const SUBCOMMANDS = new Set(['add', 'list', 'remove', 'resume', 'run', 'runs', 'logs', 'stop', 'pause', 'doctor', 'plugin', 'marketplace', 'config', 'flags', 'ui', 'workflow', 'metrics', 'script', 'policy', 'schedule', 'models', 'container', 'broker', 'extension', 'proxy', 'memory', 'setup', 'sessions']);
+const SUBCOMMANDS = new Set(['add', 'list', 'remove', 'resume', 'run', 'runs', 'logs', 'stop', 'pause', 'doctor', 'plugin', 'marketplace', 'config', 'flags', 'ui', 'workflow', 'metrics', 'script', 'policy', 'schedule', 'models', 'container', 'broker', 'worker', 'extension', 'proxy', 'memory', 'setup', 'sessions']);
 
 /** Levenshtein distance, two-row. Only ever called on short argv tokens. */
 function editDistance(a, b) {
@@ -3691,6 +3693,11 @@ async function main() {
       // Loaded lazily: the broker is its own process and needs none of the core graph.
       const { runBrokerCli } = await import('../broker/main.mjs');
       return runBrokerCli(rest);
+    }
+    if (sub === 'worker') {
+      // Loaded lazily: a worker is its own process (another container) and never opens the database.
+      const { runWorkerCli } = await import('../worker/main.mjs');
+      return runWorkerCli(rest);
     }
   }
   // `worca --ui [...]` is the historical spelling of `worca ui start [...]`; hand the

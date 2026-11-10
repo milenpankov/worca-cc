@@ -925,10 +925,16 @@ worca container login     # log Claude Code in, once
 ```
 
 `worca container help` lists the rest (`down`, `logs`, `pull`, `shell`,
-`run -- <worca args>`, overlays via `--with egress,ssh,teams,clonein`). Without
+`run -- <worca args>`, overlays via `--with egress,ssh,teams,clonein,workers`). Without
 npm, download `docker/compose.yml`, set `WORCA_PROJECTS` in a `.env` beside it
 and `docker compose up -d`. See [`docs/docker.md`](docs/docker.md) for login
 options, git credentials, the egress allowlist, clone-in mode and Windows (WSL2).
+
+With `--with workers` the box becomes a **controller** and every run and every chat
+thread gets a worker container of its own, from a per-engine image, created when
+needed and removed afterwards — the same topology as the Kubernetes chart below.
+[`docs/workers.md`](docs/workers.md) explains the model and where agents'
+credentials come from there.
 
 ### Hosted, behind Cloudflare Access
 
@@ -942,6 +948,14 @@ configuration and checks of a running deployment:
 [Operate your deployment](docs/deploy-railway.md#operate-your-deployment), with
 the `tools/railway/worca-railway.mjs` tool and this repository's
 `/worca-railway` skill for Claude Code.
+
+### Kubernetes
+
+On a cluster, Worca runs as one always-on controller pod and an ephemeral worker
+pod per run and per chat thread, created and removed by the controller, with the
+files shared on a ReadWriteMany volume. The Helm chart is
+[`deploy/helm/worca`](deploy/helm/worca/README.md); storage classes, the kind
+quickstart, upgrades and troubleshooting: [`docs/kubernetes.md`](docs/kubernetes.md).
 
 ## Quick start
 
@@ -1131,6 +1145,8 @@ The skill starts the same deterministic orchestrator as the CLI;
 - [Remote access](docs/remote-access.md) — opt-in, behind Cloudflare Access, with Worca checking the token
 - [Browser extension](docs/browser-extension.md) — sidebar chat, page context and Pinpoint on web pages; pairing and security model
 - [Deploy on Railway](docs/deploy-railway.md) — the container as a hosted service behind Cloudflare Access
+- [Kubernetes](docs/kubernetes.md) — the Helm chart: a controller pod plus a worker pod per run, the shared volume, storage classes, upgrades and troubleshooting
+- [Workers](docs/workers.md) — agents in their own containers (Compose `--with workers`, Kubernetes): how the controller hands work to them, configuration, credentials on workers, what differs from one process
 - [Releasing](docs/RELEASING.md) — how `@worca/app` versions are published
 - [Screenshots](docs/screenshots.md) — how the shots in this README are made: a sandboxed Worca, demo data, headless Chrome
 - [Contributing](CONTRIBUTING.md) — developing Worca from source
