@@ -85,6 +85,8 @@ test("a run's worker for another engine than its own leaves when idle and comes 
     assert.deepEqual(b.started.map((h) => h.engine), ['codex', 'claude']);
     for (let i = 0; i < 200 && b.live.length > 1; i++) await new Promise((res) => setTimeout(res, 20));
     assert.deepEqual(b.live.map((h) => h.engine), ['codex'], "the helper left; the run's own worker has no idle timeout");
+    for (let i = 0; i < 200 && !helper.closed; i++) await new Promise((res) => setTimeout(res, 10));   // the controller has seen the close too
+    assert.equal(helper.closed, true);
     assert.equal(await r.acquire(scope, { engine: 'codex' }), own);
     const again = await r.acquire(scope, { engine: 'claude' });
     assert.notEqual(again, helper, 'a fresh one when the run needs that engine again');
