@@ -617,7 +617,7 @@ export async function runScriptExecution(ctx) {
     const file = programFile();
     // On a worker the interpreter is the worker image's, not this container's: nothing to probe here (a worker
     // without one fails the spawn, and says so).
-    const probe = spawnsRemotely() ? { ok: true, command: ['python3'] } : await probePython();
+    const probe = spawnsRemotely() ? { ok: true, command: [String(process.env.WORCA_PYTHON || '').trim() || 'python3'] } : await probePython();   // a configured interpreter by name: the worker's PATH resolves it
     if (!probe.ok) throw scriptError(pythonMissingSentence(key));
     const [exe, ...pre] = probe.command;
     run = await spawnOrThrow({ file: exe, args: [...pre, '-u', PY_HARNESS_PATH, file], cwd: envelope.ctx.cwd,
@@ -625,7 +625,10 @@ export async function runScriptExecution(ctx) {
       stdoutMode: 'frame', platform }).catch((err) => {
       // The worker image has no python (the slim images ship none): the sentence a local preflight would have given,
       // with the image that has one.
-      if (spawnsRemotely() && err?.code === 'ENOENT' && existsSync(envelope.ctx.cwd)) throw scriptError(`${pythonMissingSentence(key).replace('on this machine', 'in the worker image')}; a slim worker image ships no python — use the -full image (WORCA_TAG=<version>-full, or worker.variant: full in the Helm chart)`);
+      // (A working directory the worker cannot see is an ENOENT too: the worker names it, and that message stands.)
+      if (spawnsRemotely() && err?.code === 'ENOENT' && !/working directory .* does not exist on this worker/.test(String(err.message))) {
+        throw scriptError(`${pythonMissingSentence(key).replace('on this machine', 'in the worker image').replace(' (set WORCA_PYTHON)', '')}; a slim worker image ships no python — use the -full image (WORCA_TAG=<version>-full, or worker.variant: full in the Helm chart), or name an interpreter the image has with WORCA_PYTHON`);
+      }
       throw err;
     });
     afterRun(run);

@@ -8,16 +8,16 @@
 //   WORCA_WORKER_TOKEN       the one-time token, or WORCA_WORKER_TOKEN_FILE  (required)
 //   WORCA_WORKER_SCOPE       run:<pipeline id> | chat:<thread id>     (required)
 //   WORCA_WORKER_ID          the id the controller expects in the hello (required)
-//   WORCA_WORKER_HOME        the HOME children run with; default <worcaHome>/worker-homes/<kind>/<id>
 //   WORCA_WORKER_IDLE_MS     leave after this long with nothing to run (chat workers)
 //
 // Exit codes: 0 after a shutdown, an idle timeout or a refusal it was told about; 1 when the
 // connection dropped; 78 (EX_CONFIG) when the assignment is incomplete; `--check` prints the
 // capabilities as JSON and exits 0 without connecting (image smoke tests).
 import { readFileSync, mkdirSync, existsSync, copyFileSync, chmodSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { worcaHome } from '../core/projects.mjs';
 import { parseScopeKey } from '../core/executor/scope.mjs';
+import { workerHomeDir } from '../core/executor/index.mjs';
 import { envInt } from '../core/executor/shared.mjs';
 import { probeCapabilities } from './capabilities.mjs';
 import { startWorker } from './client.mjs';
@@ -44,7 +44,9 @@ export function readWorkerConfig(env = process.env) {
   const idle = Number(env.WORCA_WORKER_IDLE_MS);
   const idleMs = Number.isFinite(idle) && idle > 0 ? idle : null;
   if (errors.length) return { errors };
-  const home = String(env.WORCA_WORKER_HOME || '').trim() || join(worcaHome(), 'worker-homes', scope.kind, scope.id);
+  // The controller's rule (executor/index.mjs workerHomeDir), under the worca home this env names: the controller cleans
+  // the folder up by the same path, so nothing overrides it.
+  const home = workerHomeDir(scope, String(env.WORCA_HOME || '').trim() ? join(resolve(String(env.WORCA_HOME).trim()), '.worca-cc') : worcaHome());
   return { url, scope, token, workerId, home, idleMs, errors: [] };
 }
 

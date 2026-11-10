@@ -235,7 +235,9 @@ test('egress and workers together put the controller on the internal network, no
   assert.deepEqual(overlayEnv(['egress', 'workers']), { WORCA_UPLINK_NETWORK: 'internal' });
   assert.deepEqual(overlayEnv(['workers']), {});
   assert.deepEqual(overlayEnv(['egress']), {});
-  assert.deepEqual(overlayEnv(['egress', 'workers'], { already: 'mynet' }), {}, 'a value the operator set stays');
+  assert.deepEqual(overlayEnv(['egress', 'workers'], { already: 'internal' }), {}, 'already right: nothing to set');
+  assert.deepEqual(overlayEnv(['egress', 'workers'], { already: 'default' }), { WORCA_UPLINK_NETWORK: 'internal' }, 'any other persisted value would leave the controller on the open network');
+  assert.deepEqual(overlayEnv(['egress', 'broker']), { WORCA_UPLINK_NETWORK: 'internal' }, 'the broker overlay names the uplink network too');
 });
 
 test('staged spawn folders older than this process are swept at boot; the ones a live spawn made are kept', () => {
@@ -605,7 +607,8 @@ test("a spawn that names no env never ships this process's environment raw to a 
 
 test('a python node on a worker without python fails with the python sentence and the image to use, not a bare ENOENT', () => {
   const src = readFileSync(new URL('../src/core/graph/script-runner.mjs', import.meta.url), 'utf8');
-  assert.match(src, /spawnsRemotely\(\) && err\?\.code === 'ENOENT' && existsSync\(envelope\.ctx\.cwd\)\) throw scriptError\(`\$\{pythonMissingSentence\(key\)\.replace\('on this machine', 'in the worker image'\)\}; a slim worker image ships no python/, 'only when the cwd exists: a missing cwd is ENOENT too');
+  assert.match(src, /spawnsRemotely\(\) && err\?\.code === 'ENOENT' && !\/working directory .\* does not exist on this worker\/\.test\(String\(err\.message\)\)\)/, 'a working directory the worker cannot see is ENOENT too, and the worker names it');
+  assert.match(src, /command: \[String\(process\.env\.WORCA_PYTHON \|\| ''\)\.trim\(\) \|\| 'python3'\]/, 'a configured interpreter is honoured on a worker');
 });
 
 test('a scope id is one path segment; the scrub keep-list never carries a glob; a nulled variable counts as left out', () => {

@@ -211,6 +211,23 @@ jobs:
           path: /tmp/digests
           pattern: digests-${{ matrix.key }}-*
           merge-multiple: true
+      # Every row's digests, to know whether the whole build succeeded: the build job's result says `success` when only
+      # a fragile row (continue-on-error) failed, and a fragile row's absence must hold the moving tags as well — a
+      # controller `latest` never gets ahead of a worker image's.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: /tmp/all-digests
+          pattern: digests-*
+      - name: Did every build row deliver?
+        id: whole
+        env:
+          ROWS: ${{ needs.plan.outputs.manifest }}
+          ARCH_COUNT: 2
+        run: |
+          expected=$(( $(printf '%s' "$ROWS" | jq '.include | length') * ARCH_COUNT ))
+          got=$(find /tmp/all-digests -type f | wc -l)
+          echo "expected=$expected got=$got"
+          if [ "$got" -ge "$expected" ]; then echo "complete=true" >> "$GITHUB_OUTPUT"; else echo "complete=false" >> "$GITHUB_OUTPUT"; fi
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -235,6 +252,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           ENGINE: ${{ matrix.engine }}
           BUILD_RESULT: ${{ needs.build.result }}
+          BUILD_COMPLETE: ${{ steps.whole.outputs.complete }}
         run: |
           suffix=""; [ "$TARGET" = "worker" ] && suffix="-$ENGINE"
           [ "$VARIANT" = "full" ] && suffix="$suffix-full"
@@ -242,8 +260,8 @@ jobs:
           # The moving tags (latest, rc, 1, 1.3) move together or not at all: with one build row failed (a fragile
           # row's failure does not fail the build job), this row still publishes its version tag, but a controller
           # `latest` must not get ahead of a worker image that did not build.
-          if [ "$BUILD_RESULT" != "success" ]; then
-            echo "::warning::a build row failed: $VERSION$suffix is published, the moving tags stay where they are"
+          if [ "$BUILD_RESULT" != "success" ] || [ "$BUILD_COMPLETE" != "true" ]; then
+            echo "::warning::a build row did not deliver its digests: $VERSION$suffix is published, the moving tags stay where they are"
           elif [ "$CHANNEL" = "latest" ]; then
             major="${VERSION%%.*}"; minor="${VERSION%.*}"
             tags="$tags $minor$suffix $major$suffix latest$suffix"

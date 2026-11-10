@@ -51,7 +51,8 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
     relays.set(id, entry);
     // A line nobody waits for any more (the shim's timeout) frees its slot and the request it held; a late answer is dropped.
     if (timeoutMs > 0) { timer = setTimeout(() => { relays.delete(id); resolve({ lines: null, error: 'relay timed out' }); }, timeoutMs); timer.unref?.(); }
-    send({ type: 'relay', id, token: relayToken, line });
+    try { send({ type: 'relay', id, token: relayToken, line }); }
+    catch (err) { relays.delete(id); clearTimeout(timer); resolve({ lines: null, error: `relay: the line could not be sent (${err?.message || err})` }); }   // too large, or malformed: no slot kept
   });
 
   const finish = (code, why) => {
@@ -106,7 +107,8 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
 
   ws.on('open', () => {
     connected = true;
-    send({ type: 'hello', apiVersion: PROTOCOL_VERSION, workerId, scope, pid: process.pid, capabilities });
+    try { send({ type: 'hello', apiVersion: PROTOCOL_VERSION, workerId, scope, pid: process.pid, capabilities }); }
+    catch (err) { finish(1, `hello could not be sent: ${err?.message || err}`); }   // never an uncaught exception
   });
   ws.on('message', (data) => {
     const frame = decodeFrame(data);
@@ -124,7 +126,7 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
         pingTimer.unref?.();
         armIdle();
         return;
-      case 'refuse': log(`refused by the controller: ${frame.reason}`); finish(1, `refused: ${frame.reason}`); return;
+      case 'refuse': log(`refused by the controller: ${frame.reason}`); refusedStatus = refusedStatus ?? 403; finish(0, `refused: ${frame.reason}`); return;   // told so: an orderly end (exit 0), final for the retry loop
       case 'exec': clearTimeout(idleTimer); runner.start(frame); return;
       case 'ack': runner.ack(frame.id, frame.seq); return;
       case 'signal': runner.signal(frame.id, frame.sig); return;

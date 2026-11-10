@@ -4,7 +4,7 @@
 // one real process through the supervisor seam, the way an engine adapter would.
 import { test, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, chmodSync, rmSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, rmSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { useTempHome } from './helpers/temp-home.mjs';
@@ -64,5 +64,14 @@ test('a run under a remote executor: scoped spawns on the run\'s worker, release
   // A python script node runs on the worker image: the controller does not refuse the run for lacking an interpreter.
   assert.match(orch._preflightScriptRuntimes.toString(), /if \(isRemoteExecutor\(\)\) return;/);
   // A resume passes the bridged-model gate too, as a start does.
-  assert.match(orch._resume.toString(), /this\.stepModels = rp\.stepModels \|\| null;[\s\S]{0,700}this\._remoteExecutorPreflight\(rp\.manifest \?\? null, this\.stepModels\);/, "on the run's frozen topology, once its step models are restored");
+  // The frozen manifest is what the row restores (a resume point carries no `manifest`): per-node models are checked.
+  assert.match(orch._resume.toString(), /this\.state\.stepper = safeParse\(row\.stepper\);[\s\S]*this\.stepModels = rp\.stepModels \|\| null;[\s\S]{0,700}this\._remoteExecutorPreflight\(this\.state\?\.stepper \?\? null, this\.stepModels\);/, "on the run's frozen topology, once its step models are restored");
+});
+
+test("the bridged-model gate counts the run's own model only when a node will spawn one", () => {
+  // A workflow of script nodes alone is not refused over a default model no agent ever uses (as the broker gate reads it).
+  const src = readFileSync(new URL('../src/core/run-harness.mjs', import.meta.url), 'utf8');
+  const at = src.indexOf('_remoteExecutorPreflight(manifest, stepModels) {');
+  const gate = src.slice(at, src.indexOf('_preflightAgentKeys(agentKeys) {', at));
+  assert.match(gate, /if \(this\.claude\?\.model && \(!manifest \|\| manifestNeedsModel\(manifest\)\)\) models\.add\(this\.claude\.model\);/);
 });

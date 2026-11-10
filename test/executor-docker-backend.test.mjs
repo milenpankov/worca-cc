@@ -246,12 +246,21 @@ test('the worker network: never the Docker API one, an internal one before an op
   const logs = [];
   assert.equal(await pick(['worca_default', 'worca_docker-proxy', 'worca_internal'], { log: (l) => logs.push(l) }), 'worca_internal');
   assert.match(logs[0], /the controller is on worca_default as well as the internal network worca_internal: .*WORCA_UPLINK_NETWORK=internal/);
-  await assert.rejects(pick(['worca_docker-proxy']), /only on the Docker API network/);
+  await assert.rejects(pick(['worca_docker-proxy']), /only on sidecar link networks/);
+  // The broker's link network (compose.broker.yml, labelled worca.role=broker-link) is never a worker's uplink, and no
+  // sign that the controller's own traffic is unconfined.
+  nets.worca_broker = { Internal: true, Labels: { 'worca.role': 'broker-link' } };
+  const quiet = [];
+  assert.equal(await pick(['worca_broker', 'worca_default', 'worca_docker-proxy']), 'worca_default');
+  assert.equal(await pick(['worca_broker', 'worca_internal', 'worca_docker-proxy'], { log: (l) => quiet.push(l) }), 'worca_internal');
+  assert.deepEqual(quiet, []);
+
   assert.equal(await pick(['a', 'worca_default'], { override: 'worca_default' }), 'worca_default');
   await assert.rejects(pick(['worca_default'], { override: 'nope' }), /WORCA_WORKER_NETWORK=nope is not a network of the controller's container/);
   assert.equal(await pick([]), 'bridge');
   // An Engine that does not answer about networks (a strict socket proxy): the names decide.
   const blind = (attached) => pickWorkerNetwork({ attached, inspect: async () => { throw new Error('403'); } });
+  assert.equal(await blind(['x_broker', 'x_default']), 'x_default', 'a broker link network by name, when the Engine does not answer');
   assert.equal(await blind(['worca_default', 'worca_docker-proxy']), 'worca_default');
   assert.equal(await blind(['worca_default', 'worca_docker-proxy', 'worca_internal']), 'worca_internal');
 });

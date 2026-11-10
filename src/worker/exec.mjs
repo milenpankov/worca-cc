@@ -10,6 +10,14 @@ import { userInfo } from 'node:os';
 import { existsSync } from 'node:fs';
 import { OUT_WINDOW, OUT_BATCH_LINES, OUT_FLUSH_MS, MAX_FRAME_BYTES } from '../core/executor/protocol.mjs';
 import { isLoopbackUrl, PROXY_NAMES } from '../core/executor/shared.mjs';
+import { findOnPath } from './capabilities.mjs';
+
+/** The file to spawn: a path as given; a bare name found on the child's PATH as spawn would find it, else on this
+ *  worker's own PATH (what its hello reported), else the name as given (spawn reports the ENOENT). */
+export function resolveFile(file, childPath, workerPath) {
+  if (!file || /[\\/]/.test(file)) return file;
+  return findOnPath(file, childPath || '') || findOnPath(file, workerPath || '') || file;
+}
 
 /** Env vars a worker never hands to a child: its own credentials, and a proxy that points at the
  *  controller's loopback (the in-process proxy is unreachable from another container). */
@@ -189,10 +197,21 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
     start(frame) {
       const { id } = frame;
       let child;
+      // A working directory this worker cannot see (the shared volume not mounted at the same path) would be an
+      // ENOENT indistinguishable from a missing binary: say which it is.
+      if (frame.cwd && !existsSync(frame.cwd)) {
+        report({ type: 'spawn-error', id, code: 'ENOENT', message: `the working directory ${frame.cwd} does not exist on this worker (is the shared volume mounted at the same path as on the controller?)` });
+        if (!live.size) for (const fn of idleFns) fn();
+        return;
+      }
+      const env = childEnv(frame.env, { home, user, withheld: frame.withheld });
+      // A bare binary name is looked up on the child's PATH (the controller's); one only this worker's PATH knows —
+      // what the hello reported — is resolved here, so the spawn finds what the capabilities promised.
+      const file = resolveFile(frame.file, env.PATH, process.env.PATH);
       try {
-        child = spawn(frame.file, frame.args, {
+        child = spawn(file, frame.args, {
           cwd: frame.cwd || undefined,   // none named: this worker's own (as a local spawn without cwd)
-          env: childEnv(frame.env, { home, user, withheld: frame.withheld }),
+          env,
           stdio: [frame.stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
           detached: frame.detached !== false && platform !== 'win32',
           windowsHide: true,
@@ -207,6 +226,9 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
       child.on('spawn', () => { e.started = true; report({ type: 'started', id, pid: child.pid }); });
       child.on('error', (err) => {
         if (e.reported) return;
+        // After 'spawn' an error is about a later call (a kill refused with EPERM), not the spawn: the process runs on
+        // and its exit is still reported; a spawn-error now would make the controller believe nothing started.
+        if (e.started) { log(`process ${id} (pid ${child.pid}): ${err?.message || err}`); return; }
         e.reported = true;
         live.delete(id);
         report({ type: 'spawn-error', id, code: err.code ?? null, message: String(err.message || err).slice(0, 4000) });

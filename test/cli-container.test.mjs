@@ -57,7 +57,7 @@ test('container helpers: detectRuntime, commonParent and composeFileArgs', async
     { name: 'composeFileArgs: base first, then one -f per overlay', run: async () => {
       assert.deepEqual(composeFileArgs([]), ['-f', 'compose.yml']);
       assert.deepEqual(composeFileArgs(['egress', 'ssh']), ['-f', 'compose.yml', '-f', 'compose.egress.yml', '-f', 'compose.ssh.yml']);
-      assert.deepEqual(OVERLAYS, ['egress', 'ssh', 'teams', 'clonein', 'workers']);
+      assert.deepEqual(OVERLAYS, ['egress', 'ssh', 'teams', 'clonein', 'workers', 'broker']);
       assert.deepEqual(composeFileArgs(['workers']), ['-f', 'compose.yml', '-f', 'compose.workers.yml']);
       assert.deepEqual(composeFileArgs(['workers', 'egress', 'ca']), ['-f', 'compose.yml', '-f', 'compose.egress.yml', '-f', 'compose.workers.yml', '-f', 'compose.ca.yml'], 'one order whatever was typed: a later file wins in compose, and the workers overlay widens NO_PROXY over the egress one');
     } },
@@ -204,5 +204,17 @@ test("down removes this installation's leftover worker containers; pull refreshe
     assert.equal(await cmdContainer(['pull'], { ...o, exec, dir, env }), 0);
     assert.deepEqual(calls.filter((c) => c.args[0] === 'pull').map((c) => c.args[1]),
       ['ghcr.io/sinishadjukic/worca-worker:latest-claude', 'ghcr.io/sinishadjukic/worca-worker:latest-codex']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('`--with` without a value is refused rather than read as "no overlays"', async () => {
+  const dir = tmp();
+  try {
+    const { exec } = fakeExec();
+    const o = io();
+    assert.equal(await cmdContainer(['up', '--with', 'workers', '--projects', '/Users/me/dev'], { ...o, exec, dir }), 0);
+    assert.equal(await cmdContainer(['up', '--with'], { ...o, exec, dir }), 1);
+    assert.match(o.fails[0], /--with needs a comma-separated list of overlays/);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, '.worca-container.json'), 'utf8')).with, ['workers'], 'the remembered overlays are untouched');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

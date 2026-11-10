@@ -27,7 +27,7 @@ import { resolveUpstream, upstreamLabel } from '../core/upstream-proxy.mjs';
 
 /** The compose files shipped in the package (package.json `files`). */
 export const COMPOSE_SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docker');
-export const OVERLAYS = Object.freeze(['egress', 'ssh', 'teams', 'clonein', 'workers']);
+export const OVERLAYS = Object.freeze(['egress', 'ssh', 'teams', 'clonein', 'workers', 'broker']);
 /** The label every worker container the controller starts carries (src/core/executor/backends/docker.mjs). */
 export const WORKER_CONTAINER_LABEL = CONTROLLER_LABEL;   // the label the docker backend puts on every worker (executor/shared.mjs)
 export const WORKER_INSTANCE_LABEL = INSTANCE_LABEL;      // …and which installation it belongs to: the Compose project
@@ -59,11 +59,11 @@ export function workerImageGlob({ dotEnv = () => null, env = {} } = {}) {
 /** Compose variables an overlay COMBINATION needs. With the egress allowlist on, the controller shares the
  *  internal network with its workers, never the open default one (compose.workers.yml WORCA_UPLINK_NETWORK). */
 export function overlayEnv(overlays = [], { already = null } = {}) {
-  const both = overlays.includes('egress') && overlays.includes('workers');
-  if (both) return already ? {} : { WORCA_UPLINK_NETWORK: 'internal' };
+  const both = overlays.includes('egress') && (overlays.includes('workers') || overlays.includes('broker'));   // either names the uplink network
+  if (both) return String(already || '').trim() === 'internal' ? {} : { WORCA_UPLINK_NETWORK: 'internal' };   // any other persisted value would leave the controller on the open network
   // Only the egress overlay defines the `internal` network: a value kept in .env from an earlier `--with egress,workers`
   // would stop a start without egress ("refers to undefined network internal"). The shell value wins for this start.
-  return overlays.includes('workers') && String(already || '').trim() === 'internal' ? { WORCA_UPLINK_NETWORK: 'default', notice: 'WORCA_UPLINK_NETWORK=internal in .env needs the egress overlay; this start uses the default network' } : {};
+  return (overlays.includes('workers') || overlays.includes('broker')) && String(already || '').trim() === 'internal' ? { WORCA_UPLINK_NETWORK: 'default', notice: 'WORCA_UPLINK_NETWORK=internal in .env needs the egress overlay; this start uses the default network' } : {};
 }
 const STATE_FILE = '.worca-container.json';
 /** The proxy variables compose.yml interpolates into the box (case-sensitive: compose reads these names only). */
@@ -77,7 +77,7 @@ export const CONTAINER_HELP = `worca container — run Worca in a container (doc
   worca container init [--projects <dir>]        Write the compose files and a .env into the container dir
   worca container up [--with <overlays>] [--tag <t>]
                                                  Start the box in the background and print the URL.
-                                                 --with: comma-separated egress,ssh,teams,clonein,workers (remembered)
+                                                 --with: comma-separated egress,ssh,teams,clonein,workers,broker (remembered)
                                                  workers: agents in their own containers (docs/workers.md)
   worca container down                           Stop and remove the containers (volumes are kept)
   worca container status                         Which containers are up
@@ -129,7 +129,7 @@ function parse(argv) {
     else if (a === '--dir') o.dir = rest[++i];
     else if (a === '--runtime') o.runtime = rest[++i];
     else if (a === '--projects') o.projects = rest[++i];
-    else if (a === '--with') o.with = rest[++i];
+    else if (a === '--with') o.with = rest[++i] ?? '';   // no value: an error below, never 'forget every overlay'
     else if (a === '--tag') o.tag = rest[++i];
     else if (a === '--follow' || a === '-f') o.follow = true;
     else o._.push(a);
@@ -184,6 +184,7 @@ export function composeFileArgs(overlays) {
 }
 
 function parseWith(s) {
+  if (s === '' || s === undefined) return { error: `--with needs a comma-separated list of overlays (known: ${OVERLAYS.join(', ')}); to run with none, start without --with and remove the remembered ones from ${STATE_FILE}` };
   if (!s) return [];
   const list = s.split(',').map((x) => x.trim()).filter(Boolean);
   const bad = list.filter((x) => !OVERLAYS.includes(x));

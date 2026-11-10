@@ -17,7 +17,7 @@ export function normalizeScope(scope) {
   const kind = SCOPE_KINDS.includes(scope.kind) ? scope.kind : null;
   // The id names a folder (the worker HOME) and a container: one path segment, never a separator or a dot name.
   const raw = typeof scope.id === 'string' ? scope.id.trim() : '';
-  const id = raw && !/[\\/\0]/.test(raw) && raw !== '.' && raw !== '..' ? raw : '';
+  const id = raw && raw.length <= 256 && !/[\\/\0]/.test(raw) && raw !== '.' && raw !== '..' ? raw : '';   // the protocol's limit too (isValidScope)
   const engine = typeof scope.engine === 'string' && scope.engine.trim() ? scope.engine.trim() : null;
   return kind && id ? { kind, id, ...(engine ? { engine } : {}) } : null;
 }

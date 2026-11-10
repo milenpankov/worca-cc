@@ -477,7 +477,7 @@ the protocol is in `docs/workers.md`).
 
 **Environment.** Required: `WORCA_CONTROLLER_URL` (`ws://` or `wss://`, the controller's worker
 port), `WORCA_WORKER_SCOPE` (`run:<id>` or `chat:<id>`), `WORCA_WORKER_ID`, and the one-time
-`WORCA_WORKER_TOKEN` or `WORCA_WORKER_TOKEN_FILE`. Optional: `WORCA_WORKER_HOME`,
+`WORCA_WORKER_TOKEN` or `WORCA_WORKER_TOKEN_FILE`. Optional:
 `WORCA_WORKER_IDLE_MS`, `WORCA_WORKER_RELAY_PORT`, and `WORCA_CA_CERT_FILE` as on the
 controller. The image sets `WORCA_NO_DB=1`, `WORCA_ROLE=worker` and `WORCA_WORKER_ENGINE=<engine>`.
 A missing required variable exits **78** naming it.
@@ -486,8 +486,8 @@ A missing required variable exits **78** naming it.
 the controller** and be writable by uid 1000: the controller hands the worker paths under them
 (the run's checkout, the chat's folder). An unwritable mount exits 78 with the fix; `fsGroup` is not
 applied on NFS volumes, so export such a share owned by uid 1000 (or `anonuid=1000`). The worker's
-`HOME` is `/worca/.worca-cc/worker-homes/<kind>/<id>` unless `WORCA_WORKER_HOME` says otherwise,
-created on start; the npm, uv and Playwright caches go to `/worca/.worca-cc/worker-cache/`.
+`HOME` is `/worca/.worca-cc/worker-homes/<kind>/<id>` (the controller's layout, which it cleans up by the
+same path), created on start; the npm, uv and Playwright caches go to `/worca/.worca-cc/worker-cache/`.
 
 **What it never has.** No `sudo`, no second user, no sudoers file (one worker serves one run or
 one chat; the container is the boundary). No GitHub token, no broker secret and no database: the
@@ -556,9 +556,11 @@ What the overlay does:
   image — not checked on the controller*: the controller image only ships Claude Code.
 - `WORCA_WORKER_MEM` (4g), `WORCA_WORKER_CPUS` (2), `WORCA_WORKER_PIDS` (2048) and `WORCA_WORKER_MAX` (20) bound each worker and
   how many run at once; `worca container down` removes any worker still around.
-- The broker overlay combines with it (`--with workers,egress` and `-f compose.broker.yml`): workers
-  reach the broker by its service name, and the egress sidecar's proxy address rides through to
-  them (the in-process `WORCA_EGRESS_MODE` proxy does not — use the sidecar).
+- The broker overlay combines with it (`worca container up --with workers,egress,broker`, or the
+  same three compose files by hand with `WORCA_UPLINK_NETWORK=internal`): the broker has a link
+  network of its own that the controller joins in every combination, so workers and the controller
+  reach it by its service name, and the egress sidecar's proxy address rides through to the
+  workers (the in-process `WORCA_EGRESS_MODE` proxy does not — use the sidecar).
 - **Networks.** Workers join one of the controller's networks, chosen on purpose: never the Docker
   API network (the socket proxy's), and an `internal` network before an open one. With the egress
   overlay that is the `internal` network, so an agent on a worker has no route out but the

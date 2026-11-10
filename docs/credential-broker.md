@@ -329,7 +329,7 @@ controller and the broker when `networkPolicy.enabled`.
    WORCA_BROKER_KEY_ANTHROPIC=sk-ant-…      # an API key, or a subscription token (sk-ant-oat…)
    ```
 
-3. Start with the overlay:
+3. Start with the overlay (`worca container up --with broker` does the same):
 
    ```bash
    docker compose -f compose.yml -f compose.broker.yml up -d

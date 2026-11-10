@@ -136,6 +136,7 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
     /** Ask the worker to end its processes and leave; resolves once the socket is closed. */
     shutdown({ graceMs = 5000 } = {}) {
       if (closed) return Promise.resolve();
+      graceMs = Math.max(0, Math.floor(Number(graceMs) || 0));   // the frame carries a whole number; a float must not lose the request
       trySend({ type: 'shutdown', graceMs });
       return new Promise((resolve) => {
         const t = setTimeout(() => { try { ws.terminate(); } catch { /* gone */ } settle('shutdown timeout'); resolve(); }, graceMs + SHUTDOWN_SLACK_MS);

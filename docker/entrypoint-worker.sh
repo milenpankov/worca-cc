@@ -51,9 +51,9 @@ if [ "$worker_cmd" = 1 ]; then
     fi
   done
 
-  # 3. HOME: one per assignment, on the shared volume (the controller cleans it up), unless the
-  #    backend chose one. The scope is kind:id, used as is: the worker process (src/worker/main.mjs)
-  #    and the controller (executor/index.mjs workerHomeDir) build the same path from the same id.
+  # 3. HOME: one per assignment, on the shared volume (the controller cleans it up). The scope is kind:id, used as
+  #    is: the worker process (src/worker/main.mjs) and the controller (executor/index.mjs workerHomeDir) build the
+  #    same path from the same id — the controller owns the layout, so nothing overrides it here.
   case "$WORCA_WORKER_SCOPE" in
     run:?*|chat:?*) ;;
     *) log "WORCA_WORKER_SCOPE must be run:<id> or chat:<id> (got '${WORCA_WORKER_SCOPE}')"; exit 78 ;;   # EX_CONFIG
@@ -61,7 +61,7 @@ if [ "$worker_cmd" = 1 ]; then
   kind="${WORCA_WORKER_SCOPE%%:*}"
   id="${WORCA_WORKER_SCOPE#*:}"
   wh="${WORCA_HOME:-/worca}/.worca-cc"
-  export HOME="${WORCA_WORKER_HOME:-$wh/worker-homes/$kind/$id}"
+  export HOME="$wh/worker-homes/$kind/$id"
   mkdir -p "$HOME"
   chmod 0700 "$HOME" 2>/dev/null || true
 

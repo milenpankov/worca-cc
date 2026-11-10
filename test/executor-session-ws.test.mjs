@@ -707,3 +707,29 @@ test("a close that cut a live step tells its listeners so: a bye then is a loss,
   quiet.emit('close', 1000, Buffer.from('idle'));
   assert.deepEqual(seen2, [['bye', { hadExecs: false }]], 'an idle leave');
 });
+
+test('one release per entry; a welcome that cannot be sent fails the start at once; an IPv6 listener is bracketed', async () => {
+  const b = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  const removed = [];
+  const inner = b.remove.bind(b);
+  b.remove = async (h, o) => { removed.push(h.workerId); return inner(h, o); };
+  const r = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, chatIdleMs: 60_000, log: () => {} });
+  await r.listen();
+  try {
+    const scope = { kind: 'chat', id: 'twice' };
+    await r.acquire(scope);
+    await Promise.all([r.release(scope, { reason: 'a' }), r.release(scope, { reason: 'b' }), r.sweep()]);
+    assert.deepEqual(removed.length, 1, 'the sweep, an eviction and a release meeting on one entry remove it once');
+  } finally { await r.closeAll(); }
+  // A welcome the socket refuses (a pingMs no frame can carry): the token is spent, so the start fails now, not after the timeout.
+  const r2 = createWorkerRegistry({ backend: createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS }), host: '127.0.0.1', port: 0, startTimeoutMs: 20_000, pingMs: 200.5, log: () => {} });
+  await r2.listen();
+  try {
+    const t0 = Date.now();
+    const err = await r2.acquire({ kind: 'run', id: 'bad-welcome' }).then(() => null, (e) => e);
+    assert.match(err?.message || '', /the welcome could not be sent/);
+    assert.ok(Date.now() - t0 < 10_000);
+  } finally { await r2.closeAll(); }
+  const r3 = createWorkerRegistry({ backend: createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS }), host: '::1', port: 0, log: () => {} });
+  try { await r3.listen(); assert.match(r3.controllerUrl, /^ws:\/\/\[::1\]:\d+$/); } catch (e) { if (!/EADDRNOTAVAIL|EAFNOSUPPORT/.test(String(e?.code || e))) throw e; } finally { await r3.closeAll(); }
+});

@@ -281,6 +281,7 @@ export function signalTree(child, sig, { group = true, platform = process.platfo
  * @param {string|null} [o.workerMinVersion] the lowest version of the engine's CLI this spawn may run on when it goes
  *   to a worker (a chat's lockdown floor): an older one in the worker image is refused before anything starts
  * @param {string|null} [o.workerBelowVersion] a version the engine's CLI must stay below (a major the lockdown is unverified on)
+ * @param {string} [o.workerMinVersionFor] what needs the floor, for the refusal (default: 'a chat')
  */
 const notedResolutions = new Set();
 /** Log a shim substitution once per process: the same bin resolves on every spawn. */
@@ -367,7 +368,7 @@ function superviseLocal(o, session = null) {
       if (session) {
         const missing = missingOnWorker(session, exe);
         if (missing) throw Object.assign(new Error(missing), { code: 'EWORKERNOBIN', errorClass: 'auth' });
-        const old = tooOldOnWorker(session, exe, o.workerMinVersion, 'a chat', { below: o.workerBelowVersion ?? null });
+        const old = tooOldOnWorker(session, exe, o.workerMinVersion, o.workerMinVersionFor || 'a chat', { below: o.workerBelowVersion ?? null });
         if (old) throw Object.assign(new Error(old), { code: 'EWORKEROLDBIN', errorClass: 'auth' });
       }
       child = session

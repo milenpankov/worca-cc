@@ -112,7 +112,11 @@ export function createWorkerRegistry({
   const sweepTokens = () => { for (const [k, t] of tokens) if (tokenDead(t)) tokens.delete(k); };
 
   /** The URL a worker is told to connect to: the operator's (a service name), else this listener. */
-  const urlForWorkers = () => controllerUrl || `ws://${host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host}:${boundPort}`;
+  const urlForWorkers = () => {
+    if (controllerUrl) return controllerUrl;
+    const h = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
+    return `ws://${h.includes(':') && !h.startsWith('[') ? `[${h}]` : h}:${boundPort}`;   // an IPv6 literal is bracketed in a URL
+  };
 
   function admit(ws, req) {
     // From the first moment: a WebSocket-level error (a malformed or oversize frame before the hello, or after a
@@ -140,7 +144,13 @@ export function createWorkerRegistry({
       const theirs = hello.capabilities?.worca;
       if (version && theirs && String(theirs) !== String(version)) log(`worker ${hello.workerId} runs worca ${theirs}, this controller ${version}: pull the worker image for this version (worca container pull)`);
       try { ws.send(encodeFrame({ type: 'welcome', controllerBootId: bootId, pingMs: pingMs ?? 30_000, idleMs: entry.idleMs ?? null })); }
-      catch (err) { log(`worker ${hello.workerId}: the welcome could not be sent (${err?.message || err})`); try { ws.close(1011, 'welcome failed'); } catch { /* gone */ } return; }
+      catch (err) {
+        // The token is spent and the worker cannot try again: the start fails now, not after the whole start timeout.
+        log(`worker ${hello.workerId}: the welcome could not be sent (${err?.message || err})`);
+        try { ws.close(1011, 'welcome failed'); } catch { /* gone */ }
+        fail(entry, startFailure(`worker ${hello.workerId} for ${t.key}: the welcome could not be sent (${err?.message || err})`));
+        return;
+      }
       entry.session = session;
       entry.state = 'ready';
       clearTimeout(entry.timer); clearInterval(entry.probeTimer);
@@ -242,6 +252,12 @@ export function createWorkerRegistry({
 
   /** End one worker: shutdown frame, then the backend removes it. */
   async function releaseEntry(entry, { reason = 'released', graceMs = 5000 } = {}) {
+    // Once only: the sweep, a cap eviction and a scope's release can meet on one entry; the later callers await the first.
+    if (entry.releasing) return entry.releasing;
+    entry.releasing = releaseEntryOnce(entry, { reason, graceMs });
+    return entry.releasing;
+  }
+  async function releaseEntryOnce(entry, { reason, graceMs }) {
     entry.state = 'closing';
     clearTimeout(entry.timer); clearInterval(entry.probeTimer);
     if (!entry.session) { try { entry.ctl.abort(); } catch { /* nothing listening */ } }   // still starting: stop the backend's wait

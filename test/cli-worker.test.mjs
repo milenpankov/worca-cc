@@ -22,10 +22,10 @@ test('readWorkerConfig names every missing variable', () => {
 });
 
 test('a complete assignment resolves the scope, the home and the idle timeout', () => {
-  const r = readWorkerConfig({ WORCA_CONTROLLER_URL: 'ws://worca:4319', WORCA_WORKER_SCOPE: 'chat:t-1', WORCA_WORKER_TOKEN: 'tok', WORCA_WORKER_ID: 'w-1', WORCA_WORKER_HOME: '/tmp/h', WORCA_WORKER_IDLE_MS: '60000' });
+  const r = readWorkerConfig({ WORCA_CONTROLLER_URL: 'ws://worca:4319', WORCA_WORKER_SCOPE: 'chat:t-1', WORCA_WORKER_TOKEN: 'tok', WORCA_WORKER_ID: 'w-1', WORCA_HOME: '/tmp/h', WORCA_WORKER_IDLE_MS: '60000' });
   assert.deepEqual(r.errors, []);
   assert.deepEqual(r.scope, { kind: 'chat', id: 't-1' });
-  assert.equal(r.home, '/tmp/h');
+  assert.equal(r.home, '/tmp/h/.worca-cc/worker-homes/chat/t-1', "the controller's own layout (executor/index.mjs workerHomeDir): nothing overrides it");
   assert.equal(r.idleMs, 60000);
   assert.equal(r.token, 'tok');
 });
@@ -198,7 +198,7 @@ test('a Claude login renewed on the controller replaces the one a long-lived wor
 test('a first connection that cannot be made is tried again; a refused or a dropped one is final', { timeout: 60000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'worca-retry-'));
   const env = () => ({ PATH: '', WORCA_CONTROLLER_URL: 'ws://worca-workers:4319', WORCA_WORKER_SCOPE: 'run:r1', WORCA_WORKER_TOKEN: 't', WORCA_WORKER_ID: 'w-run-1',
-    WORCA_WORKER_HOME: join(root, 'home'), WORCA_WORKER_RELAY_PORT: String(40000 + Math.floor(Math.random() * 20000)), WORCA_WORKER_CONNECT_RETRY_MS: '20000' });
+    WORCA_HOME: root, WORCA_WORKER_RELAY_PORT: String(40000 + Math.floor(Math.random() * 20000)), WORCA_WORKER_CONNECT_RETRY_MS: '20000' });
   const fake = (o) => ({ done: Promise.resolve(o.code), connected: !!o.connected, refusedStatus: o.refusedStatus ?? null, endedWith: o.why || 'x', relay: async () => ({ lines: null, error: 'n/a' }), leave() {} });
   try {
     // The controller's Service has no ready endpoint yet: refused twice, then it connects and later shuts down cleanly.
@@ -246,7 +246,7 @@ test('a signal while the worker waits to try its first connection again stops it
     let n = 0;
     const fake = () => { n += 1; return { done: Promise.resolve(1), connected: false, refusedStatus: null, endedWith: 'socket error: connect ECONNREFUSED', relay: async () => ({ lines: null, error: 'n/a' }), leave() {} }; };
     const env = { PATH: '', WORCA_CONTROLLER_URL: 'ws://worca-workers:4319', WORCA_WORKER_SCOPE: 'run:r1', WORCA_WORKER_TOKEN: 't', WORCA_WORKER_ID: 'w-run-1',
-      WORCA_WORKER_HOME: join(root, 'home'), WORCA_WORKER_RELAY_PORT: String(40000 + Math.floor(Math.random() * 20000)), WORCA_WORKER_CONNECT_RETRY_MS: '20000' };
+      WORCA_HOME: root, WORCA_WORKER_RELAY_PORT: String(40000 + Math.floor(Math.random() * 20000)), WORCA_WORKER_CONNECT_RETRY_MS: '20000' };
     const running = runWorkerCli([], { env, out: () => {}, err: () => {}, start: fake, signals });
     for (let i = 0; i < 300 && signals.listenerCount('SIGTERM') === 0; i++) await new Promise((r) => setTimeout(r, 10));
     for (let i = 0; i < 300 && n < 1; i++) await new Promise((r) => setTimeout(r, 10));
@@ -373,4 +373,31 @@ test('env numbers are whole; a sleep on an aborted signal returns at once; a rel
   const t0 = Date.now(); await sleep(5000, ctl.signal); assert.ok(Date.now() - t0 < 1000);
   assert.equal(findOnPath('test/cli-worker.test.mjs', ''), resolve('test/cli-worker.test.mjs'));
   assert.equal(findOnPath('test/no-such-file.mjs', ''), null);
+});
+
+import { resolveFile } from '../src/worker/exec.mjs';
+
+test("a working directory the worker cannot see is named; a binary only the worker's PATH knows is found", async () => {
+  const frames = [];
+  const runner = createExecRunner({ send: (f) => frames.push(f), home: tmpdir(), log: () => {} });
+  runner.start({ type: 'exec', id: 'x-cwd', file: process.execPath, args: ['-e', ''], cwd: '/nonexistent/worca-checkout', env: {}, stdin: null, detached: true });
+  const e = frames.find((f) => f.type === 'spawn-error');
+  assert.equal(e.code, 'ENOENT');
+  assert.match(e.message, /the working directory \/nonexistent\/worca-checkout does not exist on this worker \(is the shared volume mounted at the same path/);
+  // The spawn resolves a bare name on the child's PATH first (the controller's), then on this worker's own.
+  const dir = mkdtempSync(join(tmpdir(), 'worca-bin-'));
+  writeFileSync(join(dir, 'worca-only-here'), '#!/bin/sh\necho hi\n', { mode: 0o755 });
+  assert.equal(resolveFile('worca-only-here', '/nowhere', dir), join(dir, 'worca-only-here'));
+  assert.equal(resolveFile('worca-only-here', dir, '/nowhere'), join(dir, 'worca-only-here'));
+  assert.equal(resolveFile('worca-never', '/nowhere', dir), 'worca-never', 'not found anywhere: spawn reports the ENOENT');
+  assert.equal(resolveFile('/abs/path', '/nowhere', dir), '/abs/path');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a relayed body over the limit gets a 413, not a dropped connection', async () => {
+  const shim = await startRelayShim({ relay: async () => ({ lines: [], error: null }), port: 0, log: () => {} });
+  try {
+    const res = await fetch(`http://127.0.0.1:${shim.port}/api/ask/relay`, { method: 'POST', headers: { 'x-worca-relay': 't', 'content-type': 'application/json' }, body: JSON.stringify({ line: 'x'.repeat(4 * 1024 * 1024 + 10) }) }).catch((e) => e);
+    assert.equal(res.status, 413, res?.message);
+  } finally { await shim.close(); }
 });

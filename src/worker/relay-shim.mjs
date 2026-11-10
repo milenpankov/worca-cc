@@ -24,8 +24,10 @@ export function startRelayShim({ relay, port = DEFAULT_RELAY_PORT, host = '127.0
     const token = String(req.headers['x-worca-relay'] || '');
     if (!token) return reply(401, { error: 'relay token required' });
     let size = 0; const chunks = [];
-    req.on('data', (c) => { size += c.length; if (size > BODY_MAX) { req.destroy(); return; } chunks.push(c); });
+    let tooBig = false;
+    req.on('data', (c) => { size += c.length; if (tooBig) return; if (size > BODY_MAX) { tooBig = true; reply(413, { error: `body larger than ${BODY_MAX} bytes` }); req.destroy(); return; } chunks.push(c); });
     req.on('end', async () => {
+      if (tooBig) return;
       let line;
       try { ({ line } = JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { return reply(400, { error: 'bad json' }); }
       if (typeof line !== 'string') return reply(400, { error: 'line required' });

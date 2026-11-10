@@ -38,7 +38,8 @@ let installed = null;   // { kind, registry } — set once by the server; null =
  * Install the process-wide executor. `registry` must offer
  * `acquire(scope, { signal }) -> Promise<session>` where a session has `workerId`,
  * `exec(spec, handlers) -> id` and `signal(id, sig)` (see remote-child.mjs).
- * Installing `{ kind: 'local' }` (or null) restores local spawning.
+ * Installing `{ kind: 'local' }` (or null) restores local spawning. `inProcess` marks the test backend, whose workers
+ * run in this process (engineOnWorker).
  */
 export function installExecutor(exec) {
   installed = exec && exec.kind && exec.kind !== 'local' ? exec : null;
@@ -114,7 +115,7 @@ export function workerHomeDir(scope, home = worcaHome()) {
  * such an engine; the worker refuses a binary its image lacks at the first spawn, naming the image to fix.
  */
 export function engineOnWorker(engine) {
-  return !!installed && engine !== 'claude';
+  return !!installed && !installed.inProcess && engine !== 'claude';   // in-process workers run this machine's binaries: checked here as usual
 }
 
 /**

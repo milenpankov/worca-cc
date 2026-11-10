@@ -204,14 +204,18 @@ export async function pickWorkerNetwork({ attached = [], inspect = async () => n
   const info = await Promise.all(names.map(async (name) => {
     let meta = null;
     try { meta = await inspect(name); } catch { meta = null; }
+    // A network with a worca role is a link to one sidecar (the Docker API proxy, the broker): never a worker's uplink,
+    // and no sign that the controller's own traffic is unconfined.
+    const role = meta ? meta.Labels?.[NETWORK_ROLE_LABEL] || null : (/(^|[_-])docker[_-]proxy$/.test(name) ? 'docker-api' : /(^|[_-])broker$/.test(name) ? 'broker-link' : null);
     return {
       name,
-      api: meta ? meta.Labels?.[NETWORK_ROLE_LABEL] === 'docker-api' : /(^|[_-])docker[_-]proxy$/.test(name),
+      api: role === 'docker-api',
+      link: !!role,
       internal: meta ? meta.Internal === true : /(^|[_-])internal$/.test(name),
     };
   }));
-  const usable = info.filter((n) => !n.api);
-  if (!usable.length) throw new Error(`the controller's container is only on the Docker API network (${names.join(', ')}): workers need a network they share with it`);
+  const usable = info.filter((n) => !n.link);
+  if (!usable.length) throw new Error(`the controller's container is only on sidecar link networks (${names.join(', ')}): workers need a network they share with it`);
   const confined = usable.filter((n) => n.internal);
   const open = usable.filter((n) => !n.internal);
   if (confined.length && open.length) log(`the controller is on ${open.map((n) => n.name).join(', ')} as well as the internal network ${confined[0].name}: its own traffic is not confined to the egress proxy (with the workers overlay, set WORCA_UPLINK_NETWORK=internal). Workers join ${confined[0].name} only`);

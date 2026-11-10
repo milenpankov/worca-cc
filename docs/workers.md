@@ -86,7 +86,7 @@ gets one worker per image, and they end together.
 | `WORCA_WORKER_USER` | controller (Docker) | the `uid:gid` worker containers run as; default: the user the controller process runs as |
 | `WORCA_DB_DIR` | controller | the database's own directory, off the shared volume (SQLite's WAL needs a local filesystem) |
 | `WORCA_CONTROLLER_URL`, `WORCA_WORKER_TOKEN`, `WORCA_WORKER_SCOPE`, `WORCA_WORKER_ID` | worker | the assignment, set by the controller's backend |
-| `WORCA_WORKER_HOME`, `WORCA_WORKER_IDLE_MS` | worker | optional |
+| `WORCA_WORKER_IDLE_MS` | worker | optional |
 
 `/api/health` carries an `executor` object under a remote executor.
 

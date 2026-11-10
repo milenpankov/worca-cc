@@ -17,7 +17,8 @@ export const WORKER_LABEL = 'worca.worker';
 /** Which worca installation a worker container belongs to (the Compose project, or WORCA_INSTANCE_ID): two stacks
  *  on one Docker host never list, reap or remove each other's workers. */
 export const INSTANCE_LABEL = 'worca.instance';
-/** On a Docker NETWORK: `worca.role=docker-api` marks the one the socket proxy lives on. No worker is ever put there. */
+/** On a Docker NETWORK: a role marks a link to one sidecar — `docker-api` (the socket proxy's), `broker-link` (the
+ *  broker's). No worker is ever put on a role network, and one never counts as the controller's own uplink. */
 export const NETWORK_ROLE_LABEL = 'worca.role';
 
 /** Engines whose worker image has a `-full` build (the release workflow's plan); the others exist slim only. */

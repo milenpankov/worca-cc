@@ -2069,7 +2069,7 @@ export class RunHarness extends EventEmitter {
       // A resume runs the same gate as a start, on the run's frozen topology and its step models: a bridged model
       // refused then (or a run paused before workers were turned on) gets the sentence that says so, not a
       // connection error from inside a worker.
-      this._remoteExecutorPreflight(rp.manifest ?? null, this.stepModels);
+      this._remoteExecutorPreflight(this.state?.stepper ?? null, this.stepModels);   // the frozen manifest, restored from the row above (a resume point carries none)
       // Pauses are counted only in _completePaused, so a crash-resume of an `interrupted`
       // run adds a resume but no pause (§4.4 decision 6). The stamp is consumed here.
       this._metricsIv = {
@@ -6067,7 +6067,9 @@ export class RunHarness extends EventEmitter {
     if (mockEnabled({ mock: this.claude.mock })) return;
     const models = manifestModels(manifest);
     for (const m of Object.values(stepModels || {})) if (typeof m === 'string' && m.trim()) models.add(m.trim());
-    if (this.claude?.model) models.add(this.claude.model);
+    // The run's own model counts only when some node will spawn one (as the broker gate reads it): a workflow of
+    // script nodes alone is not refused over a default model no agent ever uses.
+    if (this.claude?.model && (!manifest || manifestNeedsModel(manifest))) models.add(this.claude.model);
     const refusal = bridgedModelRefusal([...models]);
     if (refusal) throw Object.assign(new Error(`Preflight failed: ${refusal}`), { errorClass: 'auth' });
   }

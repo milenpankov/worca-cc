@@ -6,6 +6,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { startWorker } from '../../../worker/client.mjs';
+import { workerHomeDir } from '../index.mjs';
 import { probeCapabilities } from '../../../worker/capabilities.mjs';
 
 /** `probe`: look for the engines on this machine, as a worker container does (the server's own in-process mode);
@@ -20,7 +21,7 @@ export function createInProcessBackend({ homeRoot, capabilities = null, probe = 
     get live() { return [...workers.values()]; },
     async start({ scope, scopeKey, workerId, token, controllerUrl, idleMs, engine = null, signal = null }) {
       if (beforeStart) await beforeStart({ scope, scopeKey, workerId, engine, signal });
-      const home = join(homeRoot, 'worker-homes', scope.kind, scope.id);
+      const home = workerHomeDir(scope, homeRoot);
       mkdirSync(home, { recursive: true });
       const caps = capabilities ?? await (probed ||= probeCapabilities(probe ? {} : { engines: [] }));
       const w = startWorker({ url: controllerUrl, token, scope, workerId, home, capabilities: caps, idleMs, log });

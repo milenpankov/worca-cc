@@ -8,6 +8,7 @@ import { effectiveDebugSpawn } from '../settings.mjs';
 import { classifyError } from '../recoverable-error.mjs';
 import { bridgeEvents } from '../bridge/telemetry.mjs';
 import { resolveClaudeBin } from '../preflight.mjs';
+import { CLAUDE_AGENTS_FILE_MIN } from '../session-mode.mjs';
 import { CLAUDE_CLI } from './cli-specs.mjs';
 import { hostGuardEnabled, hostGuardHookEntry, hostGuardSystemPrompt } from '../host-guard.mjs';
 import { memoryUsageHookEntry } from '../memory-usage.mjs';
@@ -697,6 +698,9 @@ export function runClaudeProcess({ cwd, systemPrompt, prompt, allowedTools, perm
     superviseSpawn({
       file: bin, cli: CLAUDE_CLI, args, displayBin: bin, cwd, env: spawnEnv, stdin: plan.stdin ?? null,
       signal, asAgent, stagedDir: plan.dir || null, onEvent,
+      // The argv was shaped by THIS machine's claude (preflight caps); on a worker image an older claude would refuse
+      // `--agents <file>`: the floor that flag needs is checked against the worker's version before anything starts.
+      ...(agentsViaFile === true ? { workerMinVersion: CLAUDE_AGENTS_FILE_MIN, workerMinVersionFor: 'a session host spawn (--agents <file>)' } : {}),
       cleanup: () => {
         if (bridgeKey) bridgeEvents.off('failure', onBridgeFailure);
         cleanupStaged();

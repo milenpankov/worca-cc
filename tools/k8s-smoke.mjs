@@ -34,8 +34,10 @@ function parseArgs(argv) {
     else if (a === '--context') out.context = argv[++i];
     else if (a === '--namespace' || a === '-n') out.namespace = argv[++i];
     else if (a === '--tag') out.tag = argv[++i];
+    else if (a === '--image') out.controllerImage = argv[++i];           // a pushed controller image (repository, no tag) for --context
+    else if (a === '--worker-image') out.workerImage = argv[++i];        // its worker image repository (the smoke appends <tag>-claude)
     else if (a === '--values' || a === '-f') out.values.push(argv[++i]);
-    else if (a === '--help' || a === '-h') { console.log('usage: node tools/k8s-smoke.mjs [--no-build] [--keep] [--cluster <kind name>] [--context <kube context>] [-n <namespace>] [--tag <image tag>] [-f <values.yaml>]…'); process.exit(0); }
+    else if (a === '--help' || a === '-h') { console.log('usage: node tools/k8s-smoke.mjs [--no-build] [--keep] [--cluster <kind name>] [--context <kube context>] [--image <repo>] [--worker-image <repo>] [-n <namespace>] [--tag <image tag>] [-f <values.yaml>]…'); process.exit(0); }
     else { console.error(`k8s:smoke: unknown argument ${a}`); process.exit(2); }
   }
   return out;
