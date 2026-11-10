@@ -348,8 +348,14 @@ async function workersEndToEnd(ctrlImage, workerImg) {
       await sleep(1000);
       try { status = JSON.parse(api(['http://127.0.0.1:4317/api/history'])).pipelines.find((p) => p.id === pipelineId)?.status ?? null; } catch { status = null; }
     }
-    const logs = docker(['logs', ui], { allowFail: true });
-    const log = `${logs.stdout}${logs.stderr}`;
+    // The worker's release and removal follow the run's end asynchronously: give them a moment, as the k8s smoke does.
+    let log = '';
+    for (let i = 0; i < 60; i++) {
+      const logs = docker(['logs', ui], { allowFail: true });
+      log = `${logs.stdout}${logs.stderr}`;
+      if (/executor: removed worca-worker-run-/.test(log) && !docker(['ps', '-aq', '--filter', `label=worca.instance=${ui}`], { allowFail: true }).stdout.trim()) break;
+      await sleep(1000);
+    }
     const started = new RegExp(`executor: started (worca-worker-run-${pipelineId}-\\S+) \\(${workerImg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\) for run:${pipelineId}`).exec(log);
     const removed = started && new RegExp(`executor: removed ${started[1]} \\(done\\)`).test(log);
     const left = docker(['ps', '-aq', '--filter', `label=worca.instance=${ui}`], { allowFail: true }).stdout.trim();   // this smoke's own (the instance is the controller's name)

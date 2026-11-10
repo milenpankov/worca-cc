@@ -78,8 +78,9 @@ install_cursor() {
   ln -sfn /opt/cursor-agent/.local/bin/cursor-agent /usr/local/bin/cursor-agent
   check_bin cursor cursor-agent
   if [ -n "$ver" ]; then
-    got="$(ls /opt/cursor-agent/.local/share/cursor-agent/versions 2>/dev/null | grep -v '^\.' | head -n 1 || true)"
-    [ "$got" = "$ver" ] || say "WARNING: cursor: the installer shipped ${got:-?}, CURSOR_AGENT_VERSION says $ver (bump docker/engines.env)"
+    # What the linked binary reports, not a directory listing (the installer may keep more than one version around).
+    got="$(cursor-agent --version 2>/dev/null | head -n 1 | tr -d '\r' || true)"
+    case "$got" in *"$ver"*) ;; *) say "WARNING: cursor: the installer shipped ${got:-?}, CURSOR_AGENT_VERSION says $ver (bump docker/engines.env)" ;; esac
   fi
 }
 

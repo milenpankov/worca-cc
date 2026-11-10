@@ -59,6 +59,7 @@ test('container helpers: detectRuntime, commonParent and composeFileArgs', async
       assert.deepEqual(composeFileArgs(['egress', 'ssh']), ['-f', 'compose.yml', '-f', 'compose.egress.yml', '-f', 'compose.ssh.yml']);
       assert.deepEqual(OVERLAYS, ['egress', 'ssh', 'teams', 'clonein', 'workers']);
       assert.deepEqual(composeFileArgs(['workers']), ['-f', 'compose.yml', '-f', 'compose.workers.yml']);
+      assert.deepEqual(composeFileArgs(['workers', 'egress', 'ca']), ['-f', 'compose.yml', '-f', 'compose.egress.yml', '-f', 'compose.workers.yml', '-f', 'compose.ca.yml'], 'one order whatever was typed: a later file wins in compose, and the workers overlay widens NO_PROXY over the egress one');
     } },
   ]);
 });

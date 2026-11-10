@@ -615,3 +615,13 @@ test('a scope id is one path segment; the scrub keep-list never carries a glob; 
   assert.equal(scrubKeepList(['AWS_*', 'MY_KEY'], ['CURSOR_']), 'CURSOR_*,MY_KEY', "an allowlist glob matches nothing on the controller and must not become a prefix on the worker");
   assert.deepEqual(withheldNames({ PATH: '/bin', GH_TOKEN: null }, { PATH: '/bin', GH_TOKEN: 'ghp' }), ['GH_TOKEN'], 'an adapter unset it: the frame drops it, the worker must not refill it');
 });
+
+test("a persisted internal uplink network without the egress overlay is corrected for the start, with a notice", () => {
+  assert.deepEqual(overlayEnv(['egress', 'workers']), { WORCA_UPLINK_NETWORK: 'internal' });
+  assert.deepEqual(overlayEnv(['egress', 'workers'], { already: 'internal' }), {});
+  const fixed = overlayEnv(['workers'], { already: 'internal' });
+  assert.equal(fixed.WORCA_UPLINK_NETWORK, 'default');
+  assert.match(fixed.notice, /needs the egress overlay/);
+  assert.deepEqual(overlayEnv(['workers'], { already: 'default' }), {});
+  assert.deepEqual(overlayEnv(['workers']), {});
+});

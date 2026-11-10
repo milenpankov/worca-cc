@@ -609,3 +609,12 @@ test('compose renders the worker settings you set exactly as set (no brace of `{
   assert.equal(envOfWorca.WORCA_WORKER_START_TIMEOUT_MS, '600000');
   assert.equal(envOfWorca.GEMINI_API_KEY ?? null, null);
 });
+
+test('the socket proxy, the one container holding the Docker socket, is pinned by digest; the Engine client is never proxied', () => {
+  const compose = readFileSync(new URL('../docker/compose.workers.yml', import.meta.url), 'utf8');
+  assert.match(compose, /image: tecnativa\/docker-socket-proxy:0\.3\.0@sha256:[0-9a-f]{64}/);
+  const docker = readFileSync(new URL('../src/core/executor/backends/docker.mjs', import.meta.url), 'utf8');
+  assert.match(docker, /const agent = new http\.Agent\(\{ keepAlive: false \}\);/, 'its own agent: an HTTPS_PROXY in the environment never carries Engine calls');
+  const release = readFileSync(new URL('../.github/workflows/docker-image.yml', import.meta.url), 'utf8');
+  assert.match(release, /if \[ "\$BUILD_RESULT" != "success" \]; then\n\s+echo "::warning::a build row failed: \$VERSION\$suffix is published, the moving tags stay where they are"/, 'moving tags move together or not at all');
+});

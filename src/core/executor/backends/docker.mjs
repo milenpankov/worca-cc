@@ -60,10 +60,13 @@ export function containerIdFrom(cgroup = '', mountinfo = '') {
 
 /** A tiny Docker Engine API client over node:http (no dependency). */
 export function createDockerApi(endpoint, { api = DOCKER_API, timeoutMs = 30_000 } = {}) {
+  // Its own agent: the Engine (a socket, or the proxy sidecar on the Docker API network) is never reached through an
+  // HTTP(S)_PROXY the process honours for everything else (Node's global agent follows the environment).
+  const agent = new http.Agent({ keepAlive: false });
   const request = (method, path, body, { raw = false } = {}) => new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request({
-      ...endpoint, method, path: `/${api}${path}`,
+      ...endpoint, agent, method, path: `/${api}${path}`,
       headers: { ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}), host: 'docker' },
     }, (res) => {
       const chunks = [];

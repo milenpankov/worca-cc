@@ -10,6 +10,9 @@
 
 import { spawnSync } from 'node:child_process';
 import { CONTROLLER_LABEL, INSTANCE_LABEL } from '../core/executor/shared.mjs';
+import { workerImageFor } from '../core/executor/backends/docker.mjs';
+/** The published controller image (docker/compose.yml WORCA_IMAGE default); worker images are `<image>-worker`. */
+const DEFAULT_IMAGE = 'ghcr.io/sinishadjukic/worca';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -44,18 +47,23 @@ export function workerInstanceOf({ dotEnv = () => null, env = {} } = {}) {
  * one fixed image (`self`, or a pattern without the placeholder): there is nothing per engine to refresh.
  */
 export function workerImageGlob({ dotEnv = () => null, env = {} } = {}) {
-  const get = (name) => env[name] || dotEnv(name) || '';
-  const pattern = get('WORCA_WORKER_IMAGE');
-  if (pattern) return pattern.includes('{engine}') ? pattern.replaceAll('{engine}', '*') : null;
-  const tag = get('WORCA_TAG') || 'latest';
-  const image = get('WORCA_IMAGE') || 'ghcr.io/sinishadjukic/worca';
-  return tag.endsWith('-full') ? `${image}-worker:${tag.slice(0, -5)}-*` : `${image}-worker:${tag}-*`;
+  const read = (name) => env[name] || dotEnv(name) || null;
+  const pattern = read('WORCA_WORKER_IMAGE');
+  if (pattern && (pattern === 'self' || !pattern.includes('{engine}'))) return null;   // one fixed image: nothing per engine to refresh
+  const image = read('WORCA_IMAGE') || DEFAULT_IMAGE;
+  const tag = read('WORCA_TAG') || 'latest';
+  // The backend's own rule (executor/backends/docker.mjs workerImageFor), with `*` for the engine: `-full` is a
+  // variant only some engines have, so the glob covers every engine's slim and full image alike.
+  return workerImageFor('*', { pattern, controllerImage: `${image}:${tag}`, fullEngines: [] });   // `<tag>-*` covers `-codex` and `-claude-full` alike
 }
-
 /** Compose variables an overlay COMBINATION needs. With the egress allowlist on, the controller shares the
  *  internal network with its workers, never the open default one (compose.workers.yml WORCA_UPLINK_NETWORK). */
 export function overlayEnv(overlays = [], { already = null } = {}) {
-  return overlays.includes('egress') && overlays.includes('workers') && !already ? { WORCA_UPLINK_NETWORK: 'internal' } : {};
+  const both = overlays.includes('egress') && overlays.includes('workers');
+  if (both) return already ? {} : { WORCA_UPLINK_NETWORK: 'internal' };
+  // Only the egress overlay defines the `internal` network: a value kept in .env from an earlier `--with egress,workers`
+  // would stop a start without egress ("refers to undefined network internal"). The shell value wins for this start.
+  return overlays.includes('workers') && String(already || '').trim() === 'internal' ? { WORCA_UPLINK_NETWORK: 'default', notice: 'WORCA_UPLINK_NETWORK=internal in .env needs the egress overlay; this start uses the default network' } : {};
 }
 const STATE_FILE = '.worca-container.json';
 /** The proxy variables compose.yml interpolates into the box (case-sensitive: compose reads these names only). */
@@ -165,10 +173,13 @@ function writeState(dir, state) {
   writeFileSync(join(dir, STATE_FILE), JSON.stringify(state, null, 2) + '\n');
 }
 
-/** `-f compose.yml -f compose.<overlay>.yml …` for the remembered or requested overlays. */
+/** `-f compose.yml -f compose.<overlay>.yml …` for the remembered or requested overlays, in ONE order (OVERLAYS, not
+ *  the order typed): a later file's values win in compose, and the overlays are written for this order (the egress
+ *  overlay's NO_PROXY, for one, must come before the workers overlay's). An unknown name keeps its typed position. */
 export function composeFileArgs(overlays) {
+  const rank = (o) => { const i = OVERLAYS.indexOf(o); return i < 0 ? OVERLAYS.length : i; };
   const args = ['-f', 'compose.yml'];
-  for (const o of overlays) args.push('-f', `compose.${o}.yml`);
+  for (const o of [...overlays].sort((a, b) => rank(a) - rank(b))) args.push('-f', `compose.${o}.yml`);
   return args;
 }
 
@@ -327,9 +338,11 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
     composeEnv = Object.fromEntries(Object.entries({ ...hostEnv, ...proxy.set, ...caEnv }).filter(([, v]) => v !== undefined));
     if (a.tag) composeEnv.WORCA_TAG = a.tag;
   };
+  const noticed = new Set();
   const files = () => composeFileArgs([...overlays, ...extra]);
   const compose = (args, opts = {}) => {
-    const more = overlayEnv([...overlays, ...extra], { already: readEnvValue(dir, 'WORCA_UPLINK_NETWORK') || (composeEnv ?? process.env).WORCA_UPLINK_NETWORK });
+    const { notice, ...more } = overlayEnv([...overlays, ...extra], { already: readEnvValue(dir, 'WORCA_UPLINK_NETWORK') || (composeEnv ?? process.env).WORCA_UPLINK_NETWORK });
+    if (notice && !noticed.has(notice)) { noticed.add(notice); out(`${c('yellow', 'network')}  ${notice}`); }
     const env = Object.keys(more).length ? { ...(composeEnv ?? process.env), ...more } : composeEnv;
     return exec(rt.bin, ['compose', ...files(), ...args], { cwd: dir, env, ...opts }).status;
   };

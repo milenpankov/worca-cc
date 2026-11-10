@@ -310,7 +310,7 @@ job (Actions → CI → Run workflow).
 - [ ] `kubectl -n worca get pvc`: `db-worca-0` is `Bound` with `RWO`, `worca-shared` with `RWX`.
 - [ ] `kubectl -n worca exec statefulset/worca -- sh -c 'touch /worca/.w && rm /worca/.w && touch /projects/.w && rm /projects/.w'` succeeds (the shared volume is writable by uid 1000).
 - [ ] A mock run (`WORCA_MOCK=1`, or the UI's mock toggle) creates a pod labelled `worca.dev/instance=<release>`, and the pod is gone when the run finishes.
-- [ ] `kubectl -n worca exec <worker pod> -- env | grep -c TOKEN` is `0` when the broker is on (no model key reaches an agent), and `GH_TOKEN` is never in a worker.
+- [ ] `kubectl -n worca exec <worker pod> -- env | grep -cE 'ANTHROPIC_|CLAUDE_CODE_OAUTH|OPENAI_API|GH_TOKEN|GITHUB_TOKEN'` is `0` when the broker is on (no model key and no Git token reaches a worker). `WORCA_WORKER_TOKEN`, the worker's own one-time token, is expected there.
 - [ ] `kubectl -n worca rollout restart statefulset/worca` during a run: the run shows *paused (drain)*, then resumes on the new pod.
 - [ ] With the Ingress on: the host is in `WORCA_ALLOWED_HOSTS`, a request without an Access token gets 403, with one it gets the UI.
 - [ ] With the NetworkPolicy on: from a worker, `curl` to the controller's 4317 is refused, to its 4319 connects, to `169.254.169.254` times out.
