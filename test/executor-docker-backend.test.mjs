@@ -269,7 +269,7 @@ test('a worker container that exits at once is reported with its log tail and re
   try {
     const b = await createDockerBackend({ uid: 1000, gid: 1000, env: env(d2.socketPath, { WORCA_WORKER_IMAGE: 'nope/worker:{engine}' }), log: () => {} });
     const err = await b.start({ scope: { kind: 'run', id: 'r' }, scopeKey: 'run:r', workerId: 'w', token: 't', controllerUrl: 'ws://w:1', idleMs: null }).then(() => null, (e) => e);
-    assert.match(err.message, /worker image nope\/worker:claude is not present on this host/);
+    assert.match(err.message, /cannot create worker container from nope\/worker:claude: .*404 No such image.*a missing image is pulled .*a missing network is WORCA_WORKER_NETWORK/, "the Engine's own words: a 404 is also a network that is gone");
   } finally { await d2.close(); }
 });
 
@@ -301,4 +301,14 @@ test('createDockerApi talks to the engine over the socket', async () => {
     assert.equal((await api.version()).Version, '27.0.0');
     await assert.rejects(api.inspect('ghost'), /404/);
   } finally { await d.close(); }
+});
+
+test("the engine's own socket never reaches a worker, whatever it is called", () => {
+  const mounts = [
+    { Type: 'bind', Source: '/run/podman/podman.sock', Destination: '/run/podman/podman.sock', RW: true },
+    { Type: 'bind', Source: '/var/run/docker.sock', Destination: '/var/run/docker.sock', RW: true },
+    { Type: 'volume', Name: 'worca_home', Source: '/var/lib/docker/volumes/worca_home/_data', Destination: '/worca', RW: true },
+  ];
+  assert.deepEqual(workerMountsFrom(mounts).map((m) => m.Target), ['/run/podman/podman.sock', '/worca'], 'by name only the docker socket is known');
+  assert.deepEqual(workerMountsFrom(mounts, { enginePath: '/run/podman/podman.sock' }).map((m) => m.Target), ['/worca'], 'the configured engine socket is out too');
 });

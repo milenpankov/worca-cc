@@ -595,7 +595,7 @@ export async function runOpencodeProcess({
     const res = await superviseSpawn({
       cli: OPENCODE_CLI,
       file: bin, args, displayBin: bin, cwd, env, stdin: String(prompt ?? ''), signal: spawnSignal, asAgent, stagedDir: asAgent ? scratch : null, onEvent,
-      ...(ask ? { workerMinVersion: OPENCODE_ASK_MIN_VERSION } : {}),
+      ...(ask ? { workerMinVersion: OPENCODE_ASK_MIN_VERSION, workerBelowVersion: '2.0.0' } : {}),   // as opencodeAskSupport: 1.x only
       cleanup: () => {},
       isBenignStderr,
       stdoutErrorDetail: () => normalizer.finish().error || '',

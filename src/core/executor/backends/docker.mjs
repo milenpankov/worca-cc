@@ -120,13 +120,15 @@ export function demuxLogs(buf) {
  * destination, except the docker socket, and the Claude login volume (the controller's
  * `~/.claude`) which rides read-only at /seed/claude for the worker to copy a login from.
  */
-export function workerMountsFrom(selfMounts, { seedClaude = '/home/worca/.claude' } = {}) {
+export function workerMountsFrom(selfMounts, { seedClaude = '/home/worca/.claude', enginePath = null } = {}) {
   const out = [];
   for (const m of selfMounts || []) {
     if (!m || !m.Destination) continue;
     if (/docker\.sock$/.test(m.Destination) || /docker\.sock$/.test(m.Source || '')) continue;
     const source = m.Type === 'volume' ? m.Name : m.Source;
     if (!source) continue;
+    // The engine's own socket, whatever it is called (Podman's, a proxy's): never in a worker, which could drive it.
+    if (enginePath && (source === enginePath || m.Destination === enginePath)) continue;
     if (m.Destination === seedClaude) { out.push({ Type: m.Type, Source: source, Target: SEED_CLAUDE_DIR, ReadOnly: true }); continue; }
     out.push({ Type: m.Type, Source: source, Target: m.Destination, ReadOnly: m.RW === false });
   }
@@ -222,7 +224,7 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   let self;
   try { self = await docker.inspect(selfId); } catch (err) { throw new Error(`cannot inspect the controller's own container "${selfId}" (${err.message}); set WORCA_CONTROLLER_CONTAINER to its name or id, and run the controller as a container`); }
   const template = {
-    mounts: workerMountsFrom(self.Mounts),
+    mounts: workerMountsFrom(self.Mounts, { enginePath: dockerEndpoint(env).socketPath || null }),   // the engine's socket under any name stays out
     network: await pickWorkerNetwork({ attached: Object.keys(self.NetworkSettings?.Networks || {}), inspect: (n) => docker.network(n), override: env.WORCA_WORKER_NETWORK, log }),
     // The uid this process runs as — not the container's configured start user: with agent isolation the controller
     // starts as root and its entrypoint drops to `worca`, and a worker created as `0:0` with every capability
@@ -270,7 +272,7 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
       let created;
       if (signal?.aborted) throw abortError();
       try { created = await docker.create(name, spec); } catch (err) {
-        if (err.status === 404) throw new Error(`worker image ${image} is not present on this host (pull it, or set WORCA_WORKER_IMAGE)`);
+        if (err.status === 404) throw new Error(`cannot create worker container from ${image}: ${err.message} — a missing image is pulled (or set WORCA_WORKER_IMAGE); a missing network is WORCA_WORKER_NETWORK`);
         throw new Error(`cannot create worker container: ${err.message}`);
       }
       const id = created?.Id;

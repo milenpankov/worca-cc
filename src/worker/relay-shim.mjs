@@ -6,7 +6,7 @@
 // as the server's route, so the MCP child needs no change.
 import http from 'node:http';
 
-export const DEFAULT_RELAY_PORT = 4318;
+export const DEFAULT_RELAY_PORT = 4320;   // not 4318, the OTLP/HTTP port a telemetry sidecar or an instrumented CLI may use
 const BODY_MAX = 4 * 1024 * 1024;
 /** How long one relayed line may take to be answered: a chat tool call can run a script or wait on a run, so this is
  *  long; the socket's loss answers sooner when the controller is gone. WORCA_WORKER_RELAY_TIMEOUT_MS overrides it. */

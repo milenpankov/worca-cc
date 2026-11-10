@@ -53,7 +53,7 @@ const isStringMap = (v) => isPlainObject(v) && Object.values(v).every((x) => typ
 
 /** A worker's scope `{ kind: 'run'|'chat', id }`. */
 export function isValidScope(s) {
-  return isPlainObject(s) && (s.kind === 'run' || s.kind === 'chat') && str(s.id, 256);
+  return isPlainObject(s) && (s.kind === 'run' || s.kind === 'chat') && str(s.id, 256) && !/[\\/\0]/.test(s.id) && s.id !== '.' && s.id !== '..';   // one path segment: it names the worker HOME
 }
 
 /** What a worker found on its PATH: `{ engines: { <name>: { bin, version }|null }, platform, node, user }`. */

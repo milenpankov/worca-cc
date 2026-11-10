@@ -203,3 +203,12 @@ test('classifyPod: running, exited, fatal image waits, unschedulable and plain p
   assert.deepEqual([creating.kind, creating.reason], ['pending', 'ContainerCreating']);
   assert.equal(classifyPod({ status: {} }).kind, 'pending');
 });
+
+test('a worker container that ended inside a Running pod (a sidecar keeps the phase) is an exit, not running', () => {
+  const pod = { status: { phase: 'Running', containerStatuses: [
+    { name: 'istio-proxy', state: { running: {} } },
+    { name: 'worker', state: { terminated: { exitCode: 78, reason: 'Error', message: 'WORCA_CONTROLLER_URL is not set' } } },
+  ] } };
+  assert.deepEqual(classifyPod(pod), { kind: 'exited', reason: 'Error', message: 'WORCA_CONTROLLER_URL is not set; exit code 78' });
+  assert.equal(classifyPod({ status: { phase: 'Running', containerStatuses: [{ name: 'worker', state: { running: {} } }] } }).kind, 'running');
+});

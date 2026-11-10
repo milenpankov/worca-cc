@@ -85,7 +85,10 @@ export function stagingBase() {
  * its own, so anything older than this process is nobody's. Removes them; returns how many. Under the local
  * executor staging is the OS temp folder and there is nothing of ours to sweep.
  */
-export function sweepStaged({ before = Date.now() - Math.round(process.uptime() * 1000), home = worcaHome() } = {}) {
+/** A shared volume's clock may lag this process's: only folders this much older than the boot are swept. */
+const STAGE_CLOCK_MARGIN_MS = 5 * 60_000;
+
+export function sweepStaged({ before = Date.now() - Math.round(process.uptime() * 1000) - STAGE_CLOCK_MARGIN_MS, home = worcaHome() } = {}) {
   const dir = join(home, 'tmp', 'stage');
   let names = [];
   try { names = readdirSync(dir); } catch { return 0; }

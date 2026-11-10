@@ -4,7 +4,7 @@
 // about where agents run, reap the previous controller's workers at boot, close them at shutdown.
 // Also re-exports what the server wires with, so the server imports one module.
 import { randomUUID } from 'node:crypto';
-import { worcaVersion } from './shared.mjs';
+import { worcaVersion, envInt } from './shared.mjs';
 import { executorKind, executorConfigError, installExecutor, sweepWorkerHomes, sweepStaged } from './index.mjs';
 import { createWorkerRegistry } from './registry.mjs';
 import { createBackend } from './backends/index.mjs';
@@ -19,7 +19,7 @@ export { withExecutorScope };
 export { bridgedModelRefusal } from './gates.mjs';
 /** The loopback port of a worker's chat relay shim. Set on the CONTROLLER (it writes the URL into the chat's MCP
  *  config) and handed to every worker (shared.mjs WORKER_PASS_THROUGH), so both sides always agree. */
-export const WORKER_RELAY_PORT = Number(process.env.WORCA_WORKER_RELAY_PORT) > 0 ? Number(process.env.WORCA_WORKER_RELAY_PORT) : DEFAULT_RELAY_PORT;
+export const WORKER_RELAY_PORT = envInt(process.env, 'WORCA_WORKER_RELAY_PORT', DEFAULT_RELAY_PORT);
 
 /** The worker registry under a remote executor (src/core/executor/registry.mjs), else null. */
 let WORKERS = null;

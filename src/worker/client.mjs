@@ -80,8 +80,7 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
     idleTimer = setTimeout(async () => {
       if (runner.liveCount > 0) { armIdle(); return; }
       shuttingDown = true;
-      send({ type: 'bye' });
-      try { ws.close(1000, 'idle'); } catch { /* gone */ }
+      await sayBye('idle');
       finish(0, `idle for ${idleMs * IDLE_BACKSTOP} ms`);
     }, idleMs * IDLE_BACKSTOP);
     idleTimer.unref?.();
@@ -92,10 +91,18 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
     if (shuttingDown) return;
     shuttingDown = true;
     await runner.shutdown({ graceMs });
-    send({ type: 'bye' });
-    try { ws.close(1000, 'shutdown'); } catch { /* gone */ }
+    await sayBye('shutdown');
     finish(0, 'shutdown');
   };
+  /** Say bye and close the socket properly: finish() tears the socket down at once, which could cut the bye frame and
+   *  the close handshake still in the buffer, and the controller would then see a loss (1006) instead of a leave. */
+  const sayBye = (why) => new Promise((resolve) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; clearTimeout(t); resolve(); } };
+    const t = setTimeout(done, 1000);
+    ws.once('close', done);
+    try { send({ type: 'bye' }); ws.close(1000, why); } catch { done(); }
+  });
 
   ws.on('open', () => {
     connected = true;
@@ -129,8 +136,9 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
     }
   });
   ws.on('close', (code, reason) => finish(shuttingDown ? 0 : 1, `socket closed (${code}${reason?.length ? ` ${reason}` : ''})`));
-  ws.on('error', (err) => finish(1, `socket error: ${err?.message || err}`));
-  ws.on('unexpected-response', (_req, res) => { refusedStatus = res.statusCode; finish(1, `controller answered ${res.statusCode}`); });
+  ws.on('error', (err) => finish(shuttingDown ? 0 : 1, `socket error: ${err?.message || err}`));   // a reset while leaving is still a leave
+  // A 5xx is a gateway or Service with no ready controller behind it yet: the first-connect retry (main.mjs) goes on. Anything else (401: a dead token) is final.
+  ws.on('unexpected-response', (_req, res) => { if (!(res.statusCode >= 500 && res.statusCode <= 599)) refusedStatus = res.statusCode; finish(1, `controller answered ${res.statusCode}`); });
 
   return {
     done,
@@ -144,7 +152,7 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
     send,
     relay,
     /** Removed from outside before it left on its own: not a clean exit. */
-    close: (why = 'closed') => finish(1, why),
+    close: (why = 'closed') => finish(shuttingDown ? 0 : 1, why),   // a backend closing a worker that is already leaving: still a leave
     leave,
   };
 }

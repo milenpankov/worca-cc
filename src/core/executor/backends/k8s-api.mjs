@@ -59,6 +59,9 @@ export function createK8sApi({ env = process.env, log = () => {}, pollMs = 2000,
   if (!cfg.apiUrl) throw new Error('no Kubernetes API: set WORCA_K8S_API_URL, or run inside a cluster (KUBERNETES_SERVICE_HOST)');
   const namespace = cfg.namespace || readText(`${SA_DIR}/namespace`)?.trim() || 'default';
   const ca = cfg.apiUrl.startsWith('https:') ? readText(cfg.caFile) : null;
+  // An https API with a CA file that cannot be read would fail every call later with a certificate error that reads
+  // as a cluster problem: say what it is now.
+  if (cfg.apiUrl.startsWith('https:') && cfg.caFile && ca == null) throw new Error(`cannot read the Kubernetes API CA bundle ${cfg.caFile} (WORCA_K8S_CA_FILE, or the service account mount)`);
   const dispatcher = new Agent({ connect: ca ? { ca } : {} });
   let token = { value: null, readAt: 0 };
 

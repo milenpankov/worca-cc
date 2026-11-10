@@ -18,13 +18,6 @@ const PROXY_VARS = PROXY_NAMES;
 export { isLoopbackUrl };
 
 /**
- * The env a child gets: the controller's composed env, with this worker's HOME (the scope's
- * home on the shared volume), its own pid as the host-guard pid, and nothing that only the
- * worker should hold.
- */
-/** Variables whose value is a path INSIDE a container: the controller composed the env in its own container, where
- *  its entrypoint built a CA bundle under its /tmp and (on a worker) this one's entrypoint set shared cache dirs. */
-/**
  * Which of the worker's own variables an engine child may get: model-provider credentials and their settings, by
  * name, plus whatever WORCA_WORKER_PASS_ENV lists. Never worca's own (`WORCA_*`: the token, the controller URL) and
  * never a Git host token: pushes and pull requests are the controller's, and agents get no Git credential.
@@ -38,9 +31,15 @@ export function passesFromWorker(name, extra = []) {
   return extra.includes(name) || FROM_WORKER.some((re) => re.test(name));
 }
 
+/** Variables whose value is a path INSIDE a container: the controller composed the env in its own container, where
+ *  its entrypoint built a CA bundle under its /tmp and (on a worker) this one's entrypoint set shared cache dirs. */
 const CA_FILE_VARS = ['SSL_CERT_FILE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'];
 const WORKER_LOCAL_ENV = [...CA_FILE_VARS, 'npm_config_cache', 'UV_CACHE_DIR', 'PLAYWRIGHT_BROWSERS_PATH'];
 
+/**
+ * The env a child gets: the controller's composed env, with this worker's HOME (the scope's home on the shared
+ * volume), its own pid as the host-guard pid where one was sent, and nothing that only the worker should hold.
+ */
 export function childEnv(env, { home, workerPid = process.pid, user = null, workerEnv = process.env, exists = existsSync, withheld = [] } = {}) {
   const out = { ...env };
   for (const k of WORKER_ONLY_ENV) delete out[k];

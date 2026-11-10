@@ -33,15 +33,16 @@ export function abortError() {
 }
 /** Resolve after `ms`, or at once when `signal` aborts (it never rejects: the caller re-checks the signal). */
 export function sleep(ms, signal) {
+  if (signal?.aborted) return Promise.resolve();   // already aborted: 'abort' will not fire again
   return new Promise((resolve) => {
     const t = setTimeout(done, ms);
     function done() { clearTimeout(t); signal?.removeEventListener('abort', done); resolve(); }
     signal?.addEventListener('abort', done, { once: true });
   });
 }
-/** A positive number from `env[name]`, else `def`. */
+/** A positive whole number from `env[name]` (a fraction is rounded down: the protocol carries integers), else `def`. */
 export function envInt(env, name, def) {
-  const n = Number(env?.[name]);
+  const n = Math.floor(Number(env?.[name]));
   return Number.isFinite(n) && n > 0 ? n : def;
 }
 

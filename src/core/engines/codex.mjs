@@ -242,7 +242,9 @@ function knownCodexHomes() {
   const base = codexHomesBase();
   let managed = [];
   try { managed = readdirSync(base, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(base, e.name)); } catch { /* none yet */ }
-  return [userCodexHome(), ...managed];
+  // The home a spawn on a worker used (executor/index.mjs spawnHomeDir) holds the threads it started there.
+  const spawnHome = join(spawnHomeDir(), '.codex');
+  return [...new Set([userCodexHome(), ...(spawnHome !== userCodexHome() ? [spawnHome] : []), ...managed])];
 }
 
 /**

@@ -26,7 +26,7 @@ const DRAIN_GRACE_MS = 2000;
  */
 export function withheldNames(env, controllerEnv = process.env) {
   const sent = env || {};
-  const names = Object.keys(controllerEnv).filter((k) => sent[k] === undefined && controllerEnv[k] !== undefined && controllerEnv[k] !== '');
+  const names = Object.keys(controllerEnv).filter((k) => sent[k] == null && controllerEnv[k] !== undefined && controllerEnv[k] !== '');   // null: an adapter unset it (the frame drops it too)
   const brokered = typeof controllerEnv.WORCA_BROKER_URL === 'string' && controllerEnv.WORCA_BROKER_URL.trim() !== '';
   if (brokered) for (const k of MODEL_CREDENTIAL_ENV_KEYS) if (sent[k] === undefined && !names.includes(k)) names.push(k);
   return names.filter((k) => k.length <= 256).slice(0, MAX_WITHHELD);

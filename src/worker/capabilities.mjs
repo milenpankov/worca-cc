@@ -5,7 +5,7 @@
 // No sign-in probes here: credentials reach a worker per spawn.
 import { execFile } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { ENGINE_CLIS, DEFAULT_ENGINE_BINS } from '../core/engines/cli-specs.mjs';
 import { worcaVersion } from '../core/executor/shared.mjs';
 
@@ -19,7 +19,7 @@ const isFile = (p) => { try { return statSync(p).isFile(); } catch { return fals
 export function findOnPath(bin, pathVar = process.env.PATH || '', platform = process.platform) {
   if (!bin) return null;
   if (isAbsolute(bin)) return isFile(bin) ? bin : null;
-  if (bin.includes('/') || bin.includes('\\')) return null;
+  if (bin.includes('/') || bin.includes('\\')) return isFile(resolve(bin)) ? resolve(bin) : null;   // a relative path (node_modules/.bin/claude): against this process's cwd, as spawn would
   const exts = platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
   for (const dir of String(pathVar).split(delimiter)) {
     if (!dir) continue;
@@ -31,7 +31,9 @@ export function findOnPath(bin, pathVar = process.env.PATH || '', platform = pro
 const versionOf = (bin, timeoutMs) => new Promise((resolve) => {
   execFile(bin, ['--version'], { timeout: timeoutMs, windowsHide: true, maxBuffer: 64 * 1024 }, (err, stdout) => {
     if (err) return resolve(null);
-    const line = String(stdout || '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+    // The first line that carries a version: an update notice may come before it.
+    const lines = String(stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const line = lines.find((l) => /\d+\.\d+/.test(l)) || lines[0] || '';
     resolve(line.slice(0, 256) || null);
   });
 });

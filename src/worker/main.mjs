@@ -18,6 +18,7 @@ import { readFileSync, mkdirSync, existsSync, copyFileSync, chmodSync, statSync 
 import { join } from 'node:path';
 import { worcaHome } from '../core/projects.mjs';
 import { parseScopeKey } from '../core/executor/scope.mjs';
+import { envInt } from '../core/executor/shared.mjs';
 import { probeCapabilities } from './capabilities.mjs';
 import { startWorker } from './client.mjs';
 import { startRelayShim, DEFAULT_RELAY_PORT } from './relay-shim.mjs';
@@ -66,11 +67,11 @@ export async function runWorkerCli(args = [], { env = process.env, out = (l) => 
   let w = start({ ...cfg, capabilities, log: out });
   // The chat relay on this container's loopback (relay-shim.mjs); a chat turn's MCP child posts to it.
   let shim = null;
-  const relayPort = Number(env.WORCA_WORKER_RELAY_PORT) > 0 ? Number(env.WORCA_WORKER_RELAY_PORT) : DEFAULT_RELAY_PORT;
-  const relayTimeout = Number(env.WORCA_WORKER_RELAY_TIMEOUT_MS) > 0 ? Number(env.WORCA_WORKER_RELAY_TIMEOUT_MS) : undefined;
+  const relayPort = envInt(env, 'WORCA_WORKER_RELAY_PORT', DEFAULT_RELAY_PORT);
+  const relayTimeout = envInt(env, 'WORCA_WORKER_RELAY_TIMEOUT_MS', undefined);
   try { shim = await startRelayShim({ relay: (token, line, o) => w.relay(token, line, o), port: relayPort, ...(relayTimeout ? { timeoutMs: relayTimeout } : {}), log: out }); }
   catch (e) { err(`worca worker: relay shim could not listen on 127.0.0.1:${relayPort} (${e.message}); chats on this worker will have no worca tools`); }
-  const graceMs = Number(env.WORCA_SIGTERM_GRACE_MS) > 0 ? Number(env.WORCA_SIGTERM_GRACE_MS) : 5000;
+  const graceMs = envInt(env, 'WORCA_SIGTERM_GRACE_MS', 5000);
   let stopping = false;
   const onSignal = () => { stopping = true; w.leave(graceMs); };
   signals.on('SIGTERM', onSignal);

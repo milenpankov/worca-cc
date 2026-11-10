@@ -15,7 +15,9 @@ export const SCOPE_KINDS = Object.freeze(['run', 'chat']);
 export function normalizeScope(scope) {
   if (!scope || typeof scope !== 'object') return null;
   const kind = SCOPE_KINDS.includes(scope.kind) ? scope.kind : null;
-  const id = typeof scope.id === 'string' ? scope.id.trim() : '';
+  // The id names a folder (the worker HOME) and a container: one path segment, never a separator or a dot name.
+  const raw = typeof scope.id === 'string' ? scope.id.trim() : '';
+  const id = raw && !/[\\/\0]/.test(raw) && raw !== '.' && raw !== '..' ? raw : '';
   const engine = typeof scope.engine === 'string' && scope.engine.trim() ? scope.engine.trim() : null;
   return kind && id ? { kind, id, ...(engine ? { engine } : {}) } : null;
 }

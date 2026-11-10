@@ -65,15 +65,22 @@ export function olderThan(have, min) {
  * engine has only from some version on; the controller checks its own binary before a turn (chat-descriptor.mjs),
  * but under a remote executor the binary that runs is the worker image's, known by the version in its hello.
  */
-export function tooOldOnWorker(session, exe, min, what = 'a chat') {
+export function tooOldOnWorker(session, exe, min, what = 'a chat', { below = null } = {}) {
   const engines = session?.capabilities?.engines;
-  if (!min || !engines || typeof engines !== 'object') return null;
+  if ((!min && !below) || !engines || typeof engines !== 'object') return null;
   const want = binName(exe);
   const cap = Object.values(engines).find((c) => c?.bin && binName(c.bin) === want);
-  if (!cap?.version || !olderThan(cap.version, min)) return null;
+  if (!cap?.version) return null;
   const engine = Object.entries(DEFAULT_ENGINE_BINS).find(([, b]) => b === want)?.[0] || want;
-  return `worker ${session.workerId || '?'} has ${want} ${cap.version}: ${what} needs ${min} or newer. `
-    + `Point the ${engine} worker image at a newer one: WORCA_WORKER_IMAGE (Compose) or worker.engines.${engine}.image (Helm).`;
+  const fix = `WORCA_WORKER_IMAGE (Compose) or worker.engines.${engine}.image (Helm)`;
+  if (min && olderThan(cap.version, min)) {
+    return `worker ${session.workerId || '?'} has ${want} ${cap.version}: ${what} needs ${min} or newer. Point the ${engine} worker image at a newer one: ${fix}.`;
+  }
+  // A major the controller's own gate refuses (its lockdown is unverified there): the same answer for a worker's binary.
+  if (below && versionAtLeast(cap.version, below)) {
+    return `worker ${session.workerId || '?'} has ${want} ${cap.version}: ${what} is verified below ${below} only. Point the ${engine} worker image at one before ${below}: ${fix}.`;
+  }
+  return null;
 }
 
 // Grace between the abort SIGTERM and the SIGKILL escalation. Claude Code shuts
@@ -149,6 +156,14 @@ export function cleanRunEnv(env) {
   return Object.keys(out).length ? out : null;
 }
 
+/** The variable a scrubbed spawn carries to its worker (never to the child): what the scrub lets through, as a comma
+ *  list of names and `PREFIX*` entries. The worker adds nothing of its own that is not on it (worker/exec.mjs). */
+export const ENV_KEEP_VAR = 'WORCA_ENV_KEEP';
+export function scrubKeepList(envAllowlist, prefixes = ['ANTHROPIC_', 'CLAUDE_']) {
+  // An allowlist name is matched exactly here (buildSpawnEnv): one written as a glob matches nothing, and must not become a prefix on the worker.
+  return [...prefixes.map((p) => `${p}*`), ...(Array.isArray(envAllowlist) ? envAllowlist : []).filter((n) => typeof n === 'string' && !n.includes('*'))].filter((n) => typeof n === 'string' && n && !n.includes(',')).join(',');
+}
+
 /**
  * The final child env, in the order the claude runner always applied it: the
  * scrubbed env (undefined when scrub is off -> process.env), the run-level env
@@ -160,13 +175,6 @@ export function cleanRunEnv(env) {
  * no run env and no overlay the env is otherwise identical to the scrub result.
  * @returns {{env: Record<string,string>, scrubbed: boolean}}
  */
-/** The variable a scrubbed spawn carries to its worker (never to the child): what the scrub lets through, as a comma
- *  list of names and `PREFIX*` entries. The worker adds nothing of its own that is not on it (worker/exec.mjs). */
-export const ENV_KEEP_VAR = 'WORCA_ENV_KEEP';
-export function scrubKeepList(envAllowlist, prefixes = ['ANTHROPIC_', 'CLAUDE_']) {
-  return [...prefixes.map((p) => `${p}*`), ...(Array.isArray(envAllowlist) ? envAllowlist : [])].filter((n) => typeof n === 'string' && n && !n.includes(',')).join(',');
-}
-
 export function composeSpawnEnv({ envScrub, envAllowlist, prefixes, runEnv, overlay, hostPid } = {}) {
   const scrubbedEnv = buildSpawnEnv(envScrub, envAllowlist, prefixes);
   let env = scrubbedEnv;
@@ -272,6 +280,7 @@ export function signalTree(child, sig, { group = true, platform = process.platfo
  * @param {(code:number) => any} o.onDone
  * @param {string|null} [o.workerMinVersion] the lowest version of the engine's CLI this spawn may run on when it goes
  *   to a worker (a chat's lockdown floor): an older one in the worker image is refused before anything starts
+ * @param {string|null} [o.workerBelowVersion] a version the engine's CLI must stay below (a major the lockdown is unverified on)
  */
 const notedResolutions = new Set();
 /** Log a shim substitution once per process: the same bin resolves on every spawn. */
@@ -292,7 +301,7 @@ export function engineOfSpawn({ cli, file } = {}) {
 
 /** An adapter's spawnError builds a fresh Error: the recovery class and the code of what it wraps ride along,
  *  so "no worker could start" (network) and "the worker image lacks this engine" (auth) pause instead of failing hard. */
-function carryClass(out, err) {
+export function carryClass(out, err) {
   if (out && err && typeof out === 'object') {
     if (err.errorClass && !out.errorClass) out.errorClass = err.errorClass;
     if (err.code && !out.code) out.code = err.code;
@@ -358,7 +367,7 @@ function superviseLocal(o, session = null) {
       if (session) {
         const missing = missingOnWorker(session, exe);
         if (missing) throw Object.assign(new Error(missing), { code: 'EWORKERNOBIN', errorClass: 'auth' });
-        const old = tooOldOnWorker(session, exe, o.workerMinVersion);
+        const old = tooOldOnWorker(session, exe, o.workerMinVersion, 'a chat', { below: o.workerBelowVersion ?? null });
         if (old) throw Object.assign(new Error(old), { code: 'EWORKEROLDBIN', errorClass: 'auth' });
       }
       child = session
@@ -464,11 +473,9 @@ function superviseLocal(o, session = null) {
     });
 
     child.on('error', (err) => {
-      const out = spawnError(withShimHint(err), `${displayBin} error`);
       // A lost worker arrives here pre-classified (remote-child.mjs); an adapter's spawnError that
-      // builds a fresh Error must not drop the class the failure policy acts on.
-      if (err?.errorClass && out && !out.errorClass) out.errorClass = err.errorClass;
-      finish(rejectP, out);
+      // builds a fresh Error must not drop the class the failure policy acts on, nor the code.
+      finish(rejectP, carryClass(spawnError(withShimHint(err), `${displayBin} error`), err));
     });
 
     child.on('close', (code) => {

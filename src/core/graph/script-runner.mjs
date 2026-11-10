@@ -13,7 +13,7 @@ import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mockEnabled, buildSpawnEnv } from '../claude-runner.mjs';
-import { ENV_KEEP_VAR, scrubKeepList } from '../engines/spawn.mjs';
+import { ENV_KEEP_VAR, scrubKeepList, carryClass } from '../engines/spawn.mjs';
 import { scrubbedEnv } from '../plugin-shim.mjs';            // PATH/HOME, the proxy and CA variables + the Windows start-up baseline (P11); no cycle: plugin-shim imports no graph module
 import { normalizeReview } from '../protocol.mjs';
 import { readVerdict, missingVerdictWarning } from './exec-io.mjs';
@@ -68,7 +68,9 @@ function scriptError(message, extra = {}) {
  */
 export function scriptSpawnError(key, err) {
   if (err?.name === 'AbortError') return err;
-  return scriptError(`script "${key}": spawn failed — ${err?.message || err}`, { ...(err?.errorClass ? { errorClass: err.errorClass } : {}), ...(err?.code ? { code: err.code } : {}) });
+  // A worker lost while the script ran is not a failed spawn: the script was running until its worker went.
+  const what = err?.code === 'EWORKERLOST' ? `script "${key}": ${err.message}` : `script "${key}": spawn failed — ${err?.message || err}`;
+  return carryClass(scriptError(what), err);
 }
 const lastLines = (text, n) => String(text || '').trimEnd().split('\n').slice(-n).join('\n');
 const secs = (ms) => (Math.round((ms || 0) / 100) / 10).toFixed(1);
@@ -623,7 +625,7 @@ export async function runScriptExecution(ctx) {
       stdoutMode: 'frame', platform }).catch((err) => {
       // The worker image has no python (the slim images ship none): the sentence a local preflight would have given,
       // with the image that has one.
-      if (spawnsRemotely() && err?.code === 'ENOENT') throw scriptError(`${pythonMissingSentence(key).replace('on this machine', 'in the worker image')}; a slim worker image ships no python — use the -full image (WORCA_TAG=<version>-full, or worker.variant: full in the Helm chart)`);
+      if (spawnsRemotely() && err?.code === 'ENOENT' && existsSync(envelope.ctx.cwd)) throw scriptError(`${pythonMissingSentence(key).replace('on this machine', 'in the worker image')}; a slim worker image ships no python — use the -full image (WORCA_TAG=<version>-full, or worker.variant: full in the Helm chart)`);
       throw err;
     });
     afterRun(run);

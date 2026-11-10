@@ -57,6 +57,7 @@ import { currentOwner } from '../billing.mjs';
 import { hostGuardEnabled, hostGuardSystemPrompt } from '../host-guard.mjs';
 import { CAPABILITY_KEYS } from './capabilities.mjs';
 import { superviseSpawn, guardPid, composeSpawnEnv, cleanRunEnv, safeEmit } from './spawn.mjs';
+import { spawnHomeDir } from '../executor/index.mjs';
 import { createRedactor } from '../redact.mjs';
 import { strongestClass } from '../recoverable-error.mjs';
 import { scopeLauncherEnv } from '../mcp/launch.mjs';
@@ -404,7 +405,7 @@ export async function runGooseProcess({
   // goose creates itself. Otherwise it is worca's (gooseChatHome).
   const agentId = ask && asAgent ? agentIdentityFor(currentOwner()) : null;
   const home = chatHome || (agentId ? gooseAgentChatHome(agentId.home) : gooseChatHome());
-  const realHome = agentId ? agentId.home : (process.env.HOME || homedir());
+  const realHome = agentId ? agentId.home : spawnHomeDir();   // on a worker: the worker's, where its MCP servers run
 
   const guardOn = hostGuardEnabled();
   // A chat keeps its model's provider env too (its key in worca's environment): it has no shell to read it.

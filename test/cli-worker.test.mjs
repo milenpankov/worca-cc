@@ -145,7 +145,7 @@ test('a worker survives output no frame can hold: long lines travel alone or in 
 import { passesFromWorker } from '../src/worker/exec.mjs';
 import { runWorkerCli, seedClaudeLogin } from '../src/worker/main.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
 
 test("the worker's own engine credentials reach its children when the controller sent none", () => {
@@ -360,4 +360,17 @@ test('a relayed line that times out frees its slot in the worker and answers 502
     assert.match((await res.json()).error, /relay timed out/);
     assert.equal(relays.size, 0, 'the slot (and the line it held) is gone');
   } finally { await shim.close(); }
+});
+
+import { findOnPath } from '../src/worker/capabilities.mjs';
+import { envInt, sleep } from '../src/core/executor/shared.mjs';
+
+test('env numbers are whole; a sleep on an aborted signal returns at once; a relative binary resolves against the cwd', async () => {
+  assert.equal(envInt({ X: '900000.5' }, 'X', 1), 900000, 'the protocol carries integers');
+  assert.equal(envInt({ X: '0' }, 'X', 7), 7);
+  assert.equal(envInt({}, 'X', undefined), undefined);
+  const ctl = new AbortController(); ctl.abort();
+  const t0 = Date.now(); await sleep(5000, ctl.signal); assert.ok(Date.now() - t0 < 1000);
+  assert.equal(findOnPath('test/cli-worker.test.mjs', ''), resolve('test/cli-worker.test.mjs'));
+  assert.equal(findOnPath('test/no-such-file.mjs', ''), null);
 });

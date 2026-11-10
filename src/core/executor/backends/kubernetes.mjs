@@ -97,6 +97,12 @@ export function classifyPod(pod) {
   const spec = pod?.spec || {};
   const containers = [...(spec.initContainers || []), ...(spec.containers || [])];
   const imageOf = (s) => s?.image || containers.find((c) => c?.name === s?.name)?.image || null;
+  // A sidecar keeps the pod Running after the worker container ended: the worker container's own state decides.
+  const worker = (status.containerStatuses || []).find((s) => s?.name === 'worker') || null;
+  if (worker?.state?.terminated) {
+    const t = worker.state.terminated;
+    return { kind: 'exited', reason: t.reason || 'Terminated', message: [t.message, t.exitCode != null ? `exit code ${t.exitCode}` : null].filter(Boolean).join('; ') };
+  }
   if (status.phase === 'Running') return { kind: 'running', reason: 'Running', message: '' };
   if (status.phase === 'Failed' || status.phase === 'Succeeded') {
     const term = statuses.map((s) => s.state?.terminated).find(Boolean);
@@ -274,6 +280,7 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
         name = prewarmed.name;
         try { pod = await client.getPod(namespace, name); } catch (err) { throw startFailure(`pre-warmed worker pod ${name}: ${err.message}`, { pod: name }); }
       } else {
+        if (signal?.aborted) throw abortError();   // the run was stopped while its worker was being arranged: no pod
         const template = readTemplate();
         const render = (podNameFor) => renderPodSpec({ template, instanceId, scope, scopeKey, engine, variant: engineVariant, resources: engineResources, env: workerEnv, image, activeDeadlineSeconds, bootId, name: podNameFor });
         ({ pod } = await createPod(scope, render));

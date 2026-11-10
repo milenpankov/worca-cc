@@ -66,11 +66,19 @@ export function createWorkerRegistry({
   const tokens = new Map();    // token -> { key, ek, workerId, mintedAt, used }
   const scopeEntries = (key) => [...entries.values()].filter((e) => e.key === key);
   const releases = new Map();   // scopeKey -> how many times it was released while an acquire for it was in flight: the acquire compares before and after its await
+  let sweeping = false;
+  const classes = new Map();    // engine -> its worker class (the image): fixed for the registry's life, looked up once
   const acquiring = new Map();  // scopeKey -> acquires in flight (the only readers of `releases`: the entry goes when the last one ends)
   /** What tells a scope's workers apart: the backend's class for the engine (its image), else the engine name. */
   const classOf = async (engine) => {
-    try { const c = await backend.classFor?.(engine); if (c) return String(c); } catch { /* the engine name will do */ }
-    return String(engine || 'default');
+    // Looked up once per engine name: the class is the image, fixed for this registry's life. No engine named (a
+    // script node outside any engine's scope) reads the install's default each time, which may change in Settings.
+    if (engine && classes.has(engine)) return classes.get(engine);
+    let c = null;
+    try { c = await backend.classFor?.(engine); } catch { /* the engine name will do */ }
+    const out = c ? String(c) : String(engine || 'default');
+    if (engine) classes.set(engine, out);
+    return out;
   };
   let server = null;
   let wss = null;
@@ -131,7 +139,8 @@ export function createWorkerRegistry({
       // once under a moving tag executes them with whatever it has. Not refused (the protocol matches), but said.
       const theirs = hello.capabilities?.worca;
       if (version && theirs && String(theirs) !== String(version)) log(`worker ${hello.workerId} runs worca ${theirs}, this controller ${version}: pull the worker image for this version (worca container pull)`);
-      ws.send(encodeFrame({ type: 'welcome', controllerBootId: bootId, pingMs: pingMs ?? 30_000, idleMs: entry.idleMs ?? null }));
+      try { ws.send(encodeFrame({ type: 'welcome', controllerBootId: bootId, pingMs: pingMs ?? 30_000, idleMs: entry.idleMs ?? null })); }
+      catch (err) { log(`worker ${hello.workerId}: the welcome could not be sent (${err?.message || err})`); try { ws.close(1011, 'welcome failed'); } catch { /* gone */ } return; }
       entry.session = session;
       entry.state = 'ready';
       clearTimeout(entry.timer); clearInterval(entry.probeTimer);
@@ -259,9 +268,13 @@ export function createWorkerRegistry({
       wss.on('connection', admit);
       await new Promise((resolve, reject) => {
         server.once('error', reject);
-        server.listen(port, host, () => { server.off('error', reject); boundPort = server.address().port; resolve(); });
+        server.listen(port, host, () => {
+          server.off('error', reject);
+          server.on('error', (err) => log(`worker listener error: ${err?.message || err}`));   // never an uncaught exception for the controller
+          boundPort = server.address().port; resolve();
+        });
       });
-      sweeper = setInterval(() => registry.sweep(), SWEEP_MS);
+      sweeper = setInterval(() => { if (!sweeping) registry.sweep().catch(() => {}); }, SWEEP_MS);   // one sweep at a time: a slow one never overlaps the next tick
       sweeper.unref?.();
       return boundPort;
     },
@@ -288,7 +301,8 @@ export function createWorkerRegistry({
       for (;;) {
         if (signal?.aborted) throw abortError();
         if (closing) throw startFailure('the server is shutting down');
-        let entry = want ? null : (scopeEntries(key)[0] || null);
+        // A worker of the scope that is not on its way out, else one that is (its close is awaited below).
+        let entry = want ? null : (scopeEntries(key).find((e) => !(e.state === 'ready' && e.session.leaving)) || scopeEntries(key)[0] || null);
         // One await for both lookups: every await here is a window a release must be checked after.
         const ownEngine = s.kind === 'run' && s.engine && want && want !== s.engine ? s.engine : null;
         const [wantClass, ownClass] = entry ? [null, null] : await Promise.all([classOf(want), ownEngine ? classOf(ownEngine) : null]);
@@ -302,7 +316,12 @@ export function createWorkerRegistry({
         entry ||= entries.get(ek) || null;
         // A worker on its way out (it idled out by itself and said bye; its close is not yet processed) takes no more
         // work: wait for the close, then start afresh.
-        if (entry?.state === 'ready' && entry.session.leaving) { await Promise.race([new Promise((r) => entry.session.onClose(r)), sleep(LEAVE_WAIT_MS, signal)]); continue; }
+        if (entry?.state === 'ready' && entry.session.leaving) {
+          let off = null;
+          await Promise.race([new Promise((r) => { off = entry.session.onClose(r); }), sleep(LEAVE_WAIT_MS, signal)]);
+          off?.();   // the wait is over either way: no listener left behind on a socket that closes later
+          continue;
+        }
         if (entry?.state === 'ready') { entry.session.touch(); return entry.session; }
         if (entry?.state === 'starting') return waitFor(entry, signal);
         // The cap bounds how many scopes hold workers. A scope that already holds one never waits for its second
@@ -333,6 +352,11 @@ export function createWorkerRegistry({
 
     /** Idle chat workers are released; stale tokens are dropped. */
     async sweep() {
+      if (sweeping) return;
+      sweeping = true;
+      try { await registry._sweep(); } finally { sweeping = false; }
+    },
+    async _sweep() {
       sweepTokens();
       const now = Date.now();
       for (const entry of [...entries.values()]) {

@@ -29,7 +29,9 @@ import { hostOfUrl, isLoopbackUrl, passThroughEnv, defaultWorkerEngine, startFai
 import { workerEnvFor as dockerWorkerEnv } from '../src/core/executor/backends/docker.mjs';
 import { workerEnvFor as k8sWorkerEnv } from '../src/core/executor/backends/kubernetes.mjs';
 import { mkdirSync, utimesSync, readdirSync } from 'node:fs';
-import { withExecutorScope, currentExecutorScope, scopeKey, parseScopeKey } from '../src/core/executor/scope.mjs';
+import { withExecutorScope, currentExecutorScope, scopeKey, parseScopeKey, normalizeScope } from '../src/core/executor/scope.mjs';
+import { isValidScope } from '../src/core/executor/protocol.mjs';
+import { withheldNames } from '../src/core/executor/remote-child.mjs';
 import { worcaHome } from '../src/core/projects.mjs';
 
 useTempHome(after);
@@ -432,6 +434,11 @@ test("a chat's engine on a worker is held to the version its lockdown needs", PO
   assert.equal(tooOldOnWorker(s, 'codex', null), null, 'a run step names no floor');
   assert.equal(tooOldOnWorker(s, 'claude', '9.0.0'), null, 'unknown version');
   assert.equal(tooOldOnWorker({ workerId: 'w', capabilities: null }, 'codex', '0.162'), null);
+  // A ceiling too: a major the controller's own gate refuses (its lockdown is unverified there).
+  const oc = { workerId: 'w-oc', capabilities: { engines: { opencode: { bin: '/usr/local/bin/opencode', version: '2.1.0' } } } };
+  assert.match(tooOldOnWorker(oc, 'opencode', '1.19.4', 'a chat', { below: '2.0.0' }), /has opencode 2\.1\.0: a chat is verified below 2\.0\.0 only\. Point the opencode worker image at one before 2\.0\.0/);
+  oc.capabilities.engines.opencode.version = '1.20.0';
+  assert.equal(tooOldOnWorker(oc, 'opencode', '1.19.4', 'a chat', { below: '2.0.0' }), null);
   // Through the seam: refused before any exec, as a setup problem (the run or turn pauses with the reason).
   const session = createLoopbackSession({ workerId: 'w-old', capabilities: caps });
   const registry = createLoopbackRegistry({ session });
@@ -443,7 +450,7 @@ test("a chat's engine on a worker is held to the version its lockdown needs", PO
   // Every engine that can run a chat hands its floor to the seam (the controller's own check is skipped under workers).
   const src = (f) => readFileSync(new URL(`../src/core/engines/${f}.mjs`, import.meta.url), 'utf8');
   for (const [f, re] of [['codex', /askLockdown \? \{ workerMinVersion: CODEX_ASK_MIN_VERSION \}/], ['copilot', /askLockdown \? \{ workerMinVersion: COPILOT_ASK_MIN_VERSION \}/],
-    ['goose', /ask \? \{ workerMinVersion: GOOSE_ASK_MIN_VERSION \}/], ['opencode', /ask \? \{ workerMinVersion: OPENCODE_ASK_MIN_VERSION \}/],
+    ['goose', /ask \? \{ workerMinVersion: GOOSE_ASK_MIN_VERSION \}/], ['opencode', /ask \? \{ workerMinVersion: OPENCODE_ASK_MIN_VERSION, workerBelowVersion: '2\.0\.0' \}/],
     ['gemini-family', /ask && spec\.askMinVersion \? \{ workerMinVersion: spec\.askMinVersion \}/], ['gemini', /askMinVersion: GEMINI_ASK_MIN_VERSION/], ['qwen', /askMinVersion: QWEN_ASK_MIN_VERSION/]]) {
     assert.match(src(f), re, f);
   }
@@ -598,5 +605,13 @@ test("a spawn that names no env never ships this process's environment raw to a 
 
 test('a python node on a worker without python fails with the python sentence and the image to use, not a bare ENOENT', () => {
   const src = readFileSync(new URL('../src/core/graph/script-runner.mjs', import.meta.url), 'utf8');
-  assert.match(src, /spawnsRemotely\(\) && err\?\.code === 'ENOENT'\) throw scriptError\(`\$\{pythonMissingSentence\(key\)\.replace\('on this machine', 'in the worker image'\)\}; a slim worker image ships no python/);
+  assert.match(src, /spawnsRemotely\(\) && err\?\.code === 'ENOENT' && existsSync\(envelope\.ctx\.cwd\)\) throw scriptError\(`\$\{pythonMissingSentence\(key\)\.replace\('on this machine', 'in the worker image'\)\}; a slim worker image ships no python/, 'only when the cwd exists: a missing cwd is ENOENT too');
+});
+
+test('a scope id is one path segment; the scrub keep-list never carries a glob; a nulled variable counts as left out', () => {
+  for (const id of ['../../projects', 'a/b', 'a\\b', '.', '..', 'x\0y']) assert.equal(normalizeScope({ kind: 'chat', id }), null, JSON.stringify(id));
+  assert.deepEqual(normalizeScope({ kind: 'run', id: 'r.1-2_3' }), { kind: 'run', id: 'r.1-2_3' });
+  assert.equal(isValidScope({ kind: 'chat', id: '../x' }), false);
+  assert.equal(scrubKeepList(['AWS_*', 'MY_KEY'], ['CURSOR_']), 'CURSOR_*,MY_KEY', "an allowlist glob matches nothing on the controller and must not become a prefix on the worker");
+  assert.deepEqual(withheldNames({ PATH: '/bin', GH_TOKEN: null }, { PATH: '/bin', GH_TOKEN: 'ghp' }), ['GH_TOKEN'], 'an adapter unset it: the frame drops it, the worker must not refill it');
 });
