@@ -15,6 +15,7 @@ import { readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { worcaHome } from '../projects.mjs';
 import { currentExecutorScope, normalizeScope } from './scope.mjs';
+import { reclaimClaudeLogin } from './login-seed.mjs';
 
 export const EXECUTOR_KINDS = Object.freeze(['local', 'docker', 'kubernetes']);
 
@@ -169,6 +170,17 @@ export async function releaseWorker(scope, { reason = 'released', keepHome = fal
   const released = await installed.registry.release(scope, { reason, ...(graceMs != null ? { graceMs } : {}) });
   if (!keepHome) removeWorkerHome(scope);
   return released;
+}
+
+/**
+ * After a scope's worker ended: a Claude login its engine refreshed (newer than the seed's, expiring later) becomes
+ * the seed, so the next worker — and this process's own helper spawns — start from the live token. Copies of one
+ * sign-in fall out of step otherwise (login-seed.mjs). false when nothing is seeded, or nothing newer was found.
+ */
+export function reclaimWorkerLogin(scope, seedDir = installed?.registry.loginSeedDir?.() ?? null) {
+  if (!seedDir) return false;
+  const dir = workerHomeDir(scope);
+  return dir ? reclaimClaudeLogin(dir, seedDir) : false;
 }
 
 /** Keep a scope's worker from idling out (a chat turn just ran). A no-op under the local executor. */

@@ -5,7 +5,7 @@
 // Also re-exports what the server wires with, so the server imports one module.
 import { randomUUID } from 'node:crypto';
 import { worcaVersion, envInt } from './shared.mjs';
-import { executorKind, executorConfigError, installExecutor, sweepWorkerHomes, sweepStaged } from './index.mjs';
+import { executorKind, executorConfigError, installExecutor, sweepWorkerHomes, sweepStaged, reclaimWorkerLogin } from './index.mjs';
 import { createWorkerRegistry } from './registry.mjs';
 import { createBackend } from './backends/index.mjs';
 import { worcaHome } from '../projects.mjs';
@@ -97,6 +97,8 @@ export async function installExecutorFromEnv({ log = (l) => console.log(l), port
   const backend = await createBackend(kind, { log: (l) => log(`[worca-ui] executor: ${l}`), homeRoot: worcaHome(), bootId });
   const registry = createWorkerRegistry({
     backend, bootId, version: worcaVersion(), log: (l) => log(`[worca-ui] workers: ${l}`), onRelay: (f) => relayAskLine(f.token, f.line),
+    // A login the worker's Claude refreshed goes back to the seed (its HOME is read before the release removes it).
+    onEnded: (scope) => { if (reclaimWorkerLogin(scope, backend.loginSeedDir?.() ?? null)) log(`[worca-ui] workers: the Claude login ${scope.kind}:${scope.id}'s worker refreshed is the seed now`); },
     ...(port != null ? { port } : {}), ...(host ? { host } : {}),
   });
   await registry.listen();

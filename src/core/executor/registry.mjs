@@ -56,6 +56,7 @@ export function createWorkerRegistry({
   capPollMs = WAIT_POLL_MS,
   claimGraceMs = CLAIM_GRACE_MS,   // an idle worker touched this recently was just handed to a spawn: not evictable
   version = null,           // this controller's worca version: a worker that reports another one is named in the log
+  onEnded = null,           // (scope, { reason }) after a worker is gone, released or lost: the controller reclaims what it wrote (a refreshed login)
   probeMs = 3_000,          // while waiting for a worker's hello: how often the backend is asked whether it died
   pingMs = undefined,
   bootId = `ctl-${randomUUID()}`,
@@ -165,6 +166,7 @@ export function createWorkerRegistry({
           log(left ? `worker ${entry.workerId} for ${t.key} left: idle` : `worker ${entry.workerId} for ${t.key} is gone: ${reason}`);
           entry.abandoned = true;   // a handle the backend has not handed over yet is removed when it arrives (begin)
           if (entry.handle) backend.remove(entry.handle, { reason: left ? 'idle' : `lost: ${reason}` }).catch(() => {});
+          ended(entry, left ? 'idle' : `lost: ${reason}`);
         }
       });
       const waiters = entry.waiters; entry.waiters = [];
@@ -275,6 +277,13 @@ export function createWorkerRegistry({
     for (const w of ws) w.reject(startFailure(`worker for ${entry.key} released before it connected (${reason})`));
     if (entry.session && !entry.session.closed) await entry.session.shutdown({ graceMs });
     if (entry.handle) await backend.remove(entry.handle, { reason }).catch((err) => log(`remove ${entry.workerId}: ${err?.message || err}`));
+    if (entry.session) ended(entry, reason);   // one that never connected wrote nothing
+  }
+  /** After a connected worker is gone: the controller's hook, once per entry, never throwing into the release. */
+  function ended(entry, reason) {
+    if (!onEnded || entry.ended) return;
+    entry.ended = true;
+    try { onEnded(entry.scope, { reason }); } catch (err) { log(`after worker ${entry.workerId}: ${err?.message || err}`); }
   }
 
   const registry = {
@@ -424,6 +433,8 @@ export function createWorkerRegistry({
     },
 
     describe() { return { backend: backend.describe?.() ?? null, port: boundPort, workers: entries.size, maxWorkers }; },
+    /** The backend's login seed folder in this process's filesystem, or null (executor/index.mjs reclaimWorkerLogin). */
+    loginSeedDir() { return backend.loginSeedDir?.() ?? null; },
   };
   return registry;
 }

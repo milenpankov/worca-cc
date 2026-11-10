@@ -142,11 +142,14 @@ What that means per engine:
 
 The copied Claude login is a copy: each worker HOME holds its own, and the seed is read-only. Only a
 worker that can run Claude Code gets it (the `claude` and `all` images, or one image serving every
-engine): a Codex or Gemini worker has neither the seed volume nor the copy. If
-the sign-in's tokens rotate when one copy refreshes them, the other copies stop working until the
-next seed (a worker's next start copies a newer login again). For anything long-lived prefer a
-token (`claude setup-token`, as `CLAUDE_CODE_OAUTH_TOKEN`) or the broker, which have no copies to
-fall out of step.
+engine): a Codex or Gemini worker has neither the seed volume nor the copy. The sign-in's tokens
+rotate when one copy refreshes them, which would leave every other copy revoked, so the copies are
+kept in step both ways: a worker copies the seed again before each spawn when the seed is newer (a
+`worca container login` reaches the steps already running), and when a worker ends, a login its
+Claude refreshed is written back into the seed (the next worker, and the controller's own helper
+spawns, start from the live token). Two workers refreshing at the same moment can still leave one
+with a revoked copy until its next start. For anything long-lived prefer a token (`claude
+setup-token`, as `CLAUDE_CODE_OAUTH_TOKEN`) or the broker, which have no copies to fall out of step.
 
 Each engine's section in [models.md](models.md) has the exact variables and the models to pick.
 Seeding other engines' sign-ins the way Claude's is seeded is not implemented. The Compose option

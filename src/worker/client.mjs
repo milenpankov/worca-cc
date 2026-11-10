@@ -20,7 +20,7 @@ const CONNECT_TIMEOUT_MS = 15_000;
  *   capabilities: object, idleMs?: number|null, pingMs?: number, log?: (msg:string) => void,
  *   onRelayResult?: (frame: object) => void }} o
  */
-export function startWorker({ url, token, scope, workerId, home, capabilities, idleMs = null, pingMs = DEFAULT_PING_MS, lostGraceMs = 5000, log = () => {} }) {   // lostGraceMs: main.mjs passes WORCA_SIGTERM_GRACE_MS
+export function startWorker({ url, token, scope, workerId, home, capabilities, idleMs = null, pingMs = DEFAULT_PING_MS, lostGraceMs = 5000, log = () => {}, beforeExec = null }) {   // lostGraceMs: main.mjs passes WORCA_SIGTERM_GRACE_MS; beforeExec: it re-seeds the login
   const base = String(url).replace(/\/+$/, '');
   const target = base.endsWith(WORKER_WS_PATH) ? base : base + WORKER_WS_PATH;
   let resolveDone;
@@ -132,7 +132,7 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
         armIdle();
         return;
       case 'refuse': log(`refused by the controller: ${frame.reason}`); refusedStatus = refusedStatus ?? 403; finish(0, `refused: ${frame.reason}`); return;   // told so: an orderly end (exit 0), final for the retry loop
-      case 'exec': clearTimeout(idleTimer); runner.start(frame); return;
+      case 'exec': clearTimeout(idleTimer); try { beforeExec?.(); } catch { /* best effort */ } runner.start(frame); return;
       case 'ack': runner.ack(frame.id, frame.seq); return;
       case 'signal': runner.signal(frame.id, frame.sig); return;
       case 'ping': send({ type: 'pong', id: frame.id }); return;

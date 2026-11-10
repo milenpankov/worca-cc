@@ -228,7 +228,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # (DISABLE_AUTOUPDATER above); a newer CLI is a newer image tag.
 RUN test -n "${CLAUDE_CODE_VERSION}" || { echo "CLAUDE_CODE_VERSION build arg is required" >&2; exit 1; } \
  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
- && npm cache clean --force
+ && npm cache clean --force \
+ && claude --version   # the CLI's native binary is an OPTIONAL dependency: npm skips one it cannot fetch without failing
 
 # The package from the pkg stage, `worca` on PATH. The egress overlay's sidecar runs the policy
 # proxy from the package as one standalone file (docker/compose.egress.yml;

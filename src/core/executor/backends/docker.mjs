@@ -242,9 +242,10 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   const selfId = controllerId || selfContainerId(env);
   let self;
   try { self = await docker.inspect(selfId); } catch (err) { throw new Error(`cannot inspect the controller's own container "${selfId}" (${err.message}); set WORCA_CONTROLLER_CONTAINER to its name or id, and run the controller as a container`); }
+  const seedClaudeDir = join(String(env.HOME || '').trim() || homedir(), '.claude');   // the login volume is wherever this controller's HOME is
   const template = {
     mounts: workerMountsFrom(self.Mounts, { enginePath: dockerEndpoint(env).socketPath || null, sshAgent: String(env.SSH_AUTH_SOCK || '').trim() || null,
-      seedClaude: join(String(env.HOME || '').trim() || homedir(), '.claude') }),   // the engine's socket and the SSH agent stay out; the login volume is wherever this controller's HOME is
+      seedClaude: seedClaudeDir }),   // the engine's socket and the SSH agent stay out
     network: await pickWorkerNetwork({ attached: Object.keys(self.NetworkSettings?.Networks || {}), inspect: (n) => docker.network(n), override: env.WORCA_WORKER_NETWORK, log }),
     // The uid this process runs as — not the container's configured start user: with agent isolation the controller
     // starts as root and its entrypoint drops to `worca`, and a worker created as `0:0` with every capability
@@ -343,6 +344,10 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
         bootId: c.Labels?.[CONTROLLER_LABEL] || null, own: c.Labels?.[CONTROLLER_LABEL] === bootId }));
     },
     describe() { return { kind: 'docker', endpoint: describeEndpoint(env), instance, network: template.network, image: pattern || workerImageFor('<engine>', { pattern: null, controllerImage: template.image }), live: live.size }; },
+    /** Where the Claude login workers are seeded from, in THIS process's filesystem (the controller's ~/.claude volume):
+     *  a login a worker's engine refreshed is written back there when the worker ends (executor/login-seed.mjs). null
+     *  when no worker is seeded (the volume is not mounted here). */
+    loginSeedDir() { return template.mounts.some((m) => m.Target === SEED_CLAUDE_DIR) ? seedClaudeDir : null; },
   };
 }
 

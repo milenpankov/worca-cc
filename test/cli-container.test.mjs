@@ -106,11 +106,13 @@ test('up remembers --with overlays; later verbs reuse them; run passes args thro
     assert.equal(up.cwd, dir);
     assert.equal(up.env.WORCA_TAG, '1.3.0');
     assert.ok(o.lines.some((l) => l.includes('http://localhost:4317')));
-    assert.deepEqual(JSON.parse(readFileSync(join(dir, '.worca-container.json'), 'utf8')).with, ['egress', 'ssh']);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, '.worca-container.json'), 'utf8')), { with: ['egress', 'ssh'], tag: '1.3.0' });
 
     calls.length = 0;
     assert.equal(await cmdContainer(['status'], { ...o, exec, dir }), 0);
     assert.deepEqual(calls.at(-1).args, ['compose', '-f', 'compose.yml', '-f', 'compose.egress.yml', '-f', 'compose.ssh.yml', 'ps']);
+    // The tag is remembered like the overlays: login, pull, status and down resolve the image `up` ran, never `:latest`.
+    assert.equal(calls.at(-1).env.WORCA_TAG, '1.3.0', 'status uses the remembered tag');
 
     calls.length = 0;
     assert.equal(await cmdContainer(['run', '--', '--project', '/Users/me/dev/api', '--prompt', 'add search'], { ...o, exec, dir }), 0);
@@ -119,6 +121,16 @@ test('up remembers --with overlays; later verbs reuse them; run passes args thro
     calls.length = 0;
     assert.equal(await cmdContainer(['login'], { ...o, exec, dir }), 0);
     assert.deepEqual(calls.at(-1).args.slice(-4), ['run', '--rm', 'worca', 'claude']);
+    assert.equal(calls.at(-1).env.WORCA_TAG, '1.3.0', 'login runs the remembered tag');
+
+    // A later `up --tag` replaces the remembered one; `up` without it keeps it.
+    calls.length = 0;
+    assert.equal(await cmdContainer(['up', '--tag', 'local'], { ...o, exec, dir }), 0);
+    assert.equal(calls.find((k) => k.args.includes('up')).env.WORCA_TAG, 'local');
+    assert.equal(JSON.parse(readFileSync(join(dir, '.worca-container.json'), 'utf8')).tag, 'local');
+    calls.length = 0;
+    assert.equal(await cmdContainer(['up'], { ...o, exec, dir }), 0);
+    assert.equal(calls.find((k) => k.args.includes('up')).env.WORCA_TAG, 'local');
 
     calls.length = 0;
     assert.equal(await cmdContainer(['logs', '--follow'], { ...o, exec, dir }), 0);

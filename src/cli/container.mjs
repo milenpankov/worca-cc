@@ -77,6 +77,7 @@ export const CONTAINER_HELP = `worca container — run Worca in a container (doc
   worca container up [--with <overlays>] [--tag <t>]
                                                  Start the box in the background and print the URL.
                                                  --with: comma-separated egress,ssh,teams,clonein,workers,broker (remembered)
+                                                 --tag: the image tag, e.g. local (remembered, like --with)
                                                  workers: agents in their own containers (docs/workers.md)
   worca container down                           Stop and remove the containers (volumes are kept)
   worca container status                         Which containers are up
@@ -321,6 +322,9 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
   if (rt.error) { fail(rt.error); return 1; }
   const state = readState(dir);
   let overlays = Array.isArray(state.with) ? state.with : [];
+  // The tag `up --tag` named is remembered with the overlays: login, pull, status and down must resolve the SAME image
+  // (a `--tag local` stack whose `login` pulls `:latest` fails on a tag that was never pulled or built).
+  const tag = (typeof a.tag === 'string' && a.tag.trim()) ? a.tag.trim() : (typeof state.tag === 'string' && state.tag.trim() ? state.tag.trim() : null);
   // Every compose call interpolates the same env (shell before .env), so the proxy and CA
   // fixes apply to up, run, login and shell alike. Resolved after init so a fresh .env counts.
   let composeEnv;
@@ -335,14 +339,14 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
     if (ca?.file) { extra = ['ca']; caEnv.WORCA_CA_CERT = ca.source.startsWith('.env') ? undefined : ca.file; }
     else if (ca?.missing) out(`${c('yellow', 'ca')}  ${ca.source} names ${ca.missing}, which does not exist; the box gets no corporate CA`);
     composeEnv = Object.fromEntries(Object.entries({ ...hostEnv, ...proxy.set, ...caEnv }).filter(([, v]) => v !== undefined));
-    if (a.tag) composeEnv.WORCA_TAG = a.tag;
   };
   const noticed = new Set();
   const files = () => composeFileArgs([...overlays, ...extra]);
   const compose = (args, opts = {}) => {
     const { notice, ...more } = overlayEnv([...overlays, ...extra], { already: readEnvValue(dir, 'WORCA_UPLINK_NETWORK') || (composeEnv ?? process.env).WORCA_UPLINK_NETWORK });
     if (notice && !noticed.has(notice)) { noticed.add(notice); out(`${c('yellow', 'network')}  ${notice}`); }
-    const env = Object.keys(more).length ? { ...(composeEnv ?? process.env), ...more } : composeEnv;
+    const set = { ...(tag ? { WORCA_TAG: tag } : {}), ...more };
+    const env = Object.keys(set).length ? { ...(composeEnv ?? process.env), ...set } : composeEnv;
     return exec(rt.bin, ['compose', ...files(), ...args], { cwd: dir, env, ...opts }).status;
   };
 
@@ -360,8 +364,8 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
         const parsed = parseWith(a.with);
         if (parsed.error) { fail(parsed.error); return 1; }
         overlays = parsed;
-        writeState(dir, { ...state, with: overlays });
       }
+      if (a.with !== null || (tag && tag !== state.tag)) writeState(dir, { ...state, with: overlays, ...(tag ? { tag } : {}) });
       const port = readEnvValue(dir, 'WORCA_PORT') || '4317';
       const code = compose(['up', '-d']);
       if (code !== 0) return code;
@@ -393,7 +397,7 @@ export async function cmdContainer(argv, { out, c, fail, exec = defaultExec, dir
       // Worker images are started by the controller, not by compose, so `compose pull` does not know them: a stale
       // one under a moving tag would run against the new controller. Every worker image of this tag that is here
       // is pulled too.
-      const glob = workerImageGlob({ dotEnv: (name) => readEnvValue(dir, name), env: composeEnv ?? hostEnv });
+      const glob = workerImageGlob({ dotEnv: (name) => readEnvValue(dir, name), env: { ...(composeEnv ?? hostEnv), ...(tag ? { WORCA_TAG: tag } : {}) } });
       if (overlays.includes('workers') && glob) {
         const ls = exec(rt.bin, ['images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', `reference=${glob}`], { cwd: dir, env: composeEnv, capture: true });
         const images = [...new Set(String(ls.stdout || '').split(/\s+/).filter((i) => i && !i.endsWith(':<none>')))];

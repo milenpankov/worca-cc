@@ -13,12 +13,14 @@
 // Exit codes: 0 after a shutdown, an idle timeout or a refusal it was told about; 1 when the
 // connection dropped; 78 (EX_CONFIG) when the assignment is incomplete; `--check` prints the
 // capabilities as JSON and exits 0 without connecting (image smoke tests).
-import { readFileSync, mkdirSync, existsSync, copyFileSync, chmodSync, statSync } from 'node:fs';
+import { readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { worcaHome } from '../core/projects.mjs';
 import { parseScopeKey } from '../core/executor/scope.mjs';
 import { workerHomeDir } from '../core/executor/index.mjs';
 import { envInt } from '../core/executor/shared.mjs';
+import { seedClaudeLogin } from '../core/executor/login-seed.mjs';
+export { seedClaudeLogin };   // the rule lives in executor/login-seed.mjs (the controller reclaims by the same rule)
 import { probeCapabilities } from './capabilities.mjs';
 import { startWorker } from './client.mjs';
 import { startRelayShim, DEFAULT_RELAY_PORT } from './relay-shim.mjs';
@@ -68,7 +70,10 @@ export async function runWorkerCli(args = [], { env = process.env, out = (l) => 
   const capabilities = await probeCapabilities({ env });
   const installed = Object.entries(capabilities.engines).filter(([, v]) => v).map(([k, v]) => `${k} ${v.version || '?'}`);
   out(`worca worker ${cfg.workerId} for ${cfg.scope.kind}:${cfg.scope.id} — engines: ${installed.join(', ') || 'none'}; HOME ${cfg.home}`);
-  let w = start({ ...cfg, capabilities, lostGraceMs: graceMs, log: out });
+  // Before every spawn too: a login renewed on the controller (`worca container login`) while this worker lives must
+  // reach the next step, not only the next worker (executor/login-seed.mjs).
+  const beforeExec = () => { const again = seedClaudeLogin(cfg.home, env.WORCA_WORKER_SEED_CLAUDE); if (again.length) out(`worca worker: seeded ${again.join(', ')} again (the seed is newer)`); };
+  let w = start({ ...cfg, capabilities, lostGraceMs: graceMs, log: out, beforeExec });
   // The chat relay on this container's loopback (relay-shim.mjs); a chat turn's MCP child posts to it.
   let shim = null;
   const relayPort = envInt(env, 'WORCA_WORKER_RELAY_PORT', DEFAULT_RELAY_PORT);
@@ -99,28 +104,4 @@ export async function runWorkerCli(args = [], { env = process.env, out = (l) => 
   return code;
 }
 
-/**
- * A Claude login stored on the controller (`docker compose run worca claude`, in its ~/.claude
- * volume) is not in a fresh worker HOME. With the volume mounted read-only at
- * WORCA_WORKER_SEED_CLAUDE, the login and settings are copied in (and again when the seed is newer) — never sessions or
- * projects, which belong to this HOME. Under the broker or an env token nothing is needed.
- * @returns {string[]} the files copied
- */
-export function seedClaudeLogin(home, seedDir) {
-  const dir = String(seedDir || '').trim();
-  if (!dir) return [];
-  const copied = [];
-  const target = join(home, '.claude');
-  for (const name of ['.credentials.json', 'settings.json']) {
-    const from = join(dir, name);
-    const to = join(target, name);
-    if (!existsSync(from)) continue;
-    // Copied when this HOME has none, and again when the seed is NEWER: a HOME outlives one worker (a chat thread's,
-    // a paused run's), and a login renewed on the controller since must not leave it with a revoked one. A token
-    // this HOME's own engine refreshed is newer than the seed and stays.
-    if (existsSync(to)) { try { if (statSync(from).mtimeMs <= statSync(to).mtimeMs) continue; } catch { continue; } }
-    try { mkdirSync(target, { recursive: true, mode: 0o700 }); copyFileSync(from, to); chmodSync(to, 0o600); copied.push(name); } catch { /* read-only seed, or nothing to copy */ }
-  }
-  return copied;
-}
 
