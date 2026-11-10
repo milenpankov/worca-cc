@@ -8618,7 +8618,7 @@ async function deleteAskThreadFully(id) {
       return job;
     };
     stopJob();
-    await releaseWorker({ kind: 'chat', id }, { reason: 'thread deleted' }).catch(() => {});   // its worker container and HOME, if any
+    releaseWorker({ kind: 'chat', id }, { reason: 'thread deleted' }).catch(() => {});   // its worker container and HOME, if any: in the background, the rows do not wait for a container to go
     const followers = askFollowers.get(id);
     if (followers) {
       for (const f of [...followers]) {

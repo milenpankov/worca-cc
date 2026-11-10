@@ -68,7 +68,7 @@ function fakeDocker({ dieAtOnce = false, imageMissing = false, selfUser = '1000:
   })));
 }
 
-const env = (socketPath, extra = {}) => ({ WORCA_DOCKER_HOST: `unix://${socketPath}`, WORCA_CONTROLLER_CONTAINER: SELF, TZ: 'Europe/Sofia', WORCA_BROKER_URL: 'http://broker:8080', HTTPS_PROXY: 'http://127.0.0.1:3128', GH_TOKEN: 'ghp_secret', ANTHROPIC_API_KEY: 'sk-secret', ...extra });
+const env = (socketPath, extra = {}) => ({ WORCA_DOCKER_HOST: `unix://${socketPath}`, WORCA_CONTROLLER_CONTAINER: SELF, HOME: '/home/worca', SSH_AUTH_SOCK: '/ssh-agent.sock', TZ: 'Europe/Sofia', WORCA_BROKER_URL: 'http://broker:8080', HTTPS_PROXY: 'http://127.0.0.1:3128', GH_TOKEN: 'ghp_secret', ANTHROPIC_API_KEY: 'sk-secret', ...extra });
 
 test('pure helpers: bytes, endpoints, mounts, images, env', () => {
   assert.equal(parseBytes('4g'), 4 * 1024 ** 3);
@@ -320,4 +320,15 @@ test("the engine's own socket never reaches a worker, whatever it is called", ()
   ];
   assert.deepEqual(workerMountsFrom(mounts).map((m) => m.Target), ['/run/podman/podman.sock', '/worca'], 'by name only the docker socket is known');
   assert.deepEqual(workerMountsFrom(mounts, { enginePath: '/run/podman/podman.sock' }).map((m) => m.Target), ['/worca'], 'the configured engine socket is out too');
+});
+
+test("the controller's SSH agent socket and its login volume are told apart by this process's environment, not by fixed paths", () => {
+  const mounts = [
+    { Type: 'bind', Source: '/run/host-services/ssh-auth.sock', Destination: '/ssh-agent.sock', RW: true },
+    { Type: 'bind', Source: '/tmp/agent.sock', Destination: '/keys/agent', RW: true },
+    { Type: 'volume', Name: 'worca_claude-config', Source: '/var/lib/docker/volumes/worca_claude-config/_data', Destination: '/root/.claude', RW: true },
+    { Type: 'volume', Name: 'worca_home', Source: '/var/lib/docker/volumes/worca_home/_data', Destination: '/worca', RW: true },
+  ];
+  const out = workerMountsFrom(mounts, { seedClaude: '/root/.claude', sshAgent: '/keys/agent' });
+  assert.deepEqual(out.map((m) => [m.Target, m.ReadOnly]), [['/seed/claude', true], ['/worca', false]], 'the agent sockets (by name and by SSH_AUTH_SOCK) stay out; a login at another HOME is still the read-only seed');
 });

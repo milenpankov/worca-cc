@@ -7,21 +7,33 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { userInfo } from 'node:os';
-import { existsSync } from 'node:fs';
+import { existsSync, accessSync, statSync, constants } from 'node:fs';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { OUT_WINDOW, OUT_BATCH_LINES, OUT_FLUSH_MS, MAX_FRAME_BYTES } from '../core/executor/protocol.mjs';
 import { isLoopbackUrl, PROXY_NAMES } from '../core/executor/shared.mjs';
-import { findOnPath } from './capabilities.mjs';
 
 /** The file to spawn: a path as given; a bare name found on the child's PATH as spawn would find it, else on this
  *  worker's own PATH (what its hello reported), else the name as given (spawn reports the ENOENT). */
-export function resolveFile(file, childPath, workerPath) {
+export function resolveFile(file, childPath, workerPath, { platform = process.platform } = {}) {
   if (!file || /[\\/]/.test(file)) return file;
-  return findOnPath(file, childPath || '') || findOnPath(file, workerPath || '') || file;
+  // As execvp would: absolute PATH entries only (a relative one would resolve against the child's cwd, not ours), and
+  // an entry that is not executable is skipped for the next.
+  const exts = platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
+  const executable = (p) => { try { accessSync(p, constants.X_OK); return statSync(p).isFile(); } catch { return false; } };
+  const search = (pathVar) => {
+    for (const dir of String(pathVar || '').split(delimiter)) {
+      if (!dir || !isAbsolute(dir)) continue;
+      for (const ext of exts) { const p = join(dir, file + ext); if (executable(p)) return p; }
+    }
+    return null;
+  };
+  return search(childPath) || search(workerPath) || file;
 }
 
 /** Env vars a worker never hands to a child: its own credentials, and a proxy that points at the
  *  controller's loopback (the in-process proxy is unreachable from another container). */
-const WORKER_ONLY_ENV = ['WORCA_WORKER_TOKEN', 'WORCA_WORKER_TOKEN_FILE', 'WORCA_CONTROLLER_URL', 'WORCA_WORKER_SCOPE'];
+const WORKER_ONLY_ENV = ['WORCA_WORKER_TOKEN', 'WORCA_WORKER_TOKEN_FILE', 'WORCA_CONTROLLER_URL', 'WORCA_WORKER_SCOPE',
+  'SSH_AUTH_SOCK'];   // the controller's SSH agent (compose.ssh.yml) is its push credential: agents get no Git credential
 const PROXY_VARS = PROXY_NAMES;
 export { isLoopbackUrl };
 
@@ -71,7 +83,11 @@ export function childEnv(env, { home, workerPid = process.pid, user = null, work
   // exists nowhere here — the controller's /tmp/worca-ca.*/bundle.pem — is dropped rather than break every TLS call.
   const usable = (k, v) => !!v && (!CA_FILE_VARS.includes(k) || exists(v));
   for (const k of WORKER_LOCAL_ENV) {
-    if (usable(k, workerEnv?.[k])) out[k] = workerEnv[k];
+    // A CA path is this container's or nothing (the controller's /tmp bundle is not here); the package caches are this
+    // container's shared ones (a cache is a cache). The browsers path is a default only: a run that set it on purpose
+    // (PLAYWRIGHT_BROWSERS_PATH=0, the project's own browsers) keeps it, as it would on one machine.
+    const own = k !== 'PLAYWRIGHT_BROWSERS_PATH' || out[k] === undefined;
+    if (own && usable(k, workerEnv?.[k])) out[k] = workerEnv[k];
     else if (out[k] !== undefined && !usable(k, out[k])) delete out[k];
   }
   if (home) out.HOME = home;
@@ -148,6 +164,8 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
   let user = null;
   try { user = userInfo().username || null; } catch { user = null; }
   const idleFns = new Set();
+  /** Nothing runs any more: the worker's idle timer may arm (every path that ends a child says so here). */
+  const notifyIdle = () => { if (!live.size) for (const fn of idleFns) fn(); };
 
   /** Send a lifecycle frame (started, spawn-error, exit) from a child's event; never throw: an exception there is
    *  uncaught, and takes the worker and every other process of the run with it. */
@@ -200,8 +218,8 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
       // A working directory this worker cannot see (the shared volume not mounted at the same path) would be an
       // ENOENT indistinguishable from a missing binary: say which it is.
       if (frame.cwd && !existsSync(frame.cwd)) {
-        report({ type: 'spawn-error', id, code: 'ENOENT', message: `the working directory ${frame.cwd} does not exist on this worker (is the shared volume mounted at the same path as on the controller?)` });
-        if (!live.size) for (const fn of idleFns) fn();
+        report({ type: 'spawn-error', id, code: 'ENOENT', message: `the working directory ${frame.cwd} does not exist on this worker (is the shared volume mounted at the same path as on the controller?)`.slice(0, 4000) });
+        notifyIdle();
         return;
       }
       const env = childEnv(frame.env, { home, user, withheld: frame.withheld });
@@ -218,7 +236,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         });
       } catch (err) {
         report({ type: 'spawn-error', id, code: err.code ?? null, message: String(err.message || err).slice(0, 4000) });
-        if (!live.size) for (const fn of idleFns) fn();   // nothing started: the worker is as idle as before the frame
+        notifyIdle();   // nothing started: the worker is as idle as before the frame
         return;
       }
       const e = { child, pending: [], pendingLines: 0, pendingChars: 0, seq: 0, lastAck: -1, paused: false, flushTimer: null, grace: null, started: false, reported: false };
@@ -232,7 +250,7 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         e.reported = true;
         live.delete(id);
         report({ type: 'spawn-error', id, code: err.code ?? null, message: String(err.message || err).slice(0, 4000) });
-        if (!live.size) for (const fn of idleFns) fn();
+        notifyIdle();
       });
       for (const [stream, input] of [['out', child.stdout], ['err', child.stderr]]) {
         const lines = lineSplitter((line, more) => queueLine(e, id, stream, line, more));
@@ -248,8 +266,8 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
         if (frame.reap === true && frame.detached !== false && platform !== 'win32' && typeof child.pid === 'number') { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* nothing left */ } }
         flush(e, id);
         live.delete(id);
-        report({ type: 'exit', id, code, signal });
-        if (!live.size) for (const fn of idleFns) fn();
+        if (!e.cut) report({ type: 'exit', id, code, signal });   // cut from outside: no exit, the loss is the message
+        notifyIdle();
       });
       if (frame.stdin != null) { child.stdin.on('error', () => {}); child.stdin.end(frame.stdin, 'utf8'); }
     },
@@ -280,8 +298,11 @@ export function createExecRunner({ send, home, log = () => {}, platform = proces
     },
 
     /** Stop everything: SIGTERM, wait up to graceMs, SIGKILL what is left. Resolves when all have closed. */
-    async shutdown({ graceMs = 5000 } = {}) {
+    /** `cut`: the steps are being stopped from outside (the container is going), not by their run — their end is
+     *  not reported as an exit, so the controller sees the worker vanish and retries them on a fresh one. */
+    async shutdown({ graceMs = 5000, cut = false } = {}) {
       if (!live.size) return;
+      if (cut) for (const e of live.values()) e.cut = true;
       for (const e of live.values()) runner.signalEntry(e, 'SIGTERM');
       const deadline = Date.now() + graceMs;
       while (live.size && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));

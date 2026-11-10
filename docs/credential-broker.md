@@ -335,6 +335,10 @@ controller and the broker when `networkPolicy.enabled`.
    docker compose -f compose.yml -f compose.broker.yml up -d
    ```
 
+   With the egress overlay as well, set `WORCA_UPLINK_NETWORK=internal` in `.env` (the `worca container`
+   command does it): the broker overlay names the controller's networks, and without it the controller
+   would sit on the open network beside the confined one.
+
 worca's log then shows `credentials: broker single, slots anthropic, openai, openrouter`.
 
 If you signed Claude Code in inside the container before, its stored login is in the

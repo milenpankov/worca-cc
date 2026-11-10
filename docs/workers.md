@@ -46,6 +46,10 @@ gets one worker per image, and they end together.
   the pipeline's outputs and verdicts, staged prompts (`<worcaHome>/tmp/stage`), and the
   worker's HOME (`<worcaHome>/worker-homes/<kind>/<id>`), where the engine keeps the run's
   sessions — so a replacement worker after a pause or a lost container can `--resume` them.
+  The same holds for the programs the controller names by absolute path: a node script node and a
+  chat's tool child run `node` and worca's own files where the controller has them, so a custom
+  worker image must keep node and the worca package at the paths of the published images (the
+  published worker images do).
 - **Loss.** When a worker's connection drops it stops its children as a stop would (SIGTERM, a
   few seconds of grace, then SIGKILL) and exits; the controller
   reports the step as a network failure, which the run's failure policy retries on a fresh worker.

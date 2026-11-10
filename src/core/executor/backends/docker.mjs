@@ -8,7 +8,8 @@
 // Nothing here is Compose-specific; `docker run` and Podman's socket work the same.
 import http from 'node:http';
 import { readFileSync } from 'node:fs';
-import { hostname } from 'node:os';
+import { hostname, homedir } from 'node:os';
+import { join } from 'node:path';
 import { CONTROLLER_LABEL, SCOPE_LABEL, WORKER_LABEL, INSTANCE_LABEL, NETWORK_ROLE_LABEL, FULL_VARIANT_ENGINES, fullVariantEngines, passThroughEnv, defaultWorkerEngine, envInt, abortError } from '../shared.mjs';
 
 export const DOCKER_API = 'v1.43';
@@ -123,7 +124,7 @@ export function demuxLogs(buf) {
  * destination, except the docker socket, and the Claude login volume (the controller's
  * `~/.claude`) which rides read-only at /seed/claude for the worker to copy a login from.
  */
-export function workerMountsFrom(selfMounts, { seedClaude = '/home/worca/.claude', enginePath = null } = {}) {
+export function workerMountsFrom(selfMounts, { seedClaude = '/home/worca/.claude', enginePath = null, sshAgent = null } = {}) {
   const out = [];
   for (const m of selfMounts || []) {
     if (!m || !m.Destination) continue;
@@ -132,6 +133,8 @@ export function workerMountsFrom(selfMounts, { seedClaude = '/home/worca/.claude
     if (!source) continue;
     // The engine's own socket, whatever it is called (Podman's, a proxy's): never in a worker, which could drive it.
     if (enginePath && (source === enginePath || m.Destination === enginePath)) continue;
+    // The controller's SSH agent socket (compose.ssh.yml) is its push credential: agents get no Git credential.
+    if ((sshAgent && (source === sshAgent || m.Destination === sshAgent)) || /ssh-(agent|auth)\.sock$/.test(m.Destination)) continue;
     if (m.Destination === seedClaude) { out.push({ Type: m.Type, Source: source, Target: SEED_CLAUDE_DIR, ReadOnly: true }); continue; }
     out.push({ Type: m.Type, Source: source, Target: m.Destination, ReadOnly: m.RW === false });
   }
@@ -195,12 +198,14 @@ export function workerEnvFor({ scopeKey, workerId, token, controllerUrl, idleMs,
  */
 export async function pickWorkerNetwork({ attached = [], inspect = async () => null, override = null, log = () => {} } = {}) {
   const names = [...attached].sort();
-  const want = String(override || '').trim();
-  if (want) {
-    if (!names.includes(want)) throw new Error(`WORCA_WORKER_NETWORK=${want} is not a network of the controller's container (it is on: ${names.join(', ') || 'none'})`);
-    return want;
+  let want = String(override || '').trim();
+  if (want && !names.includes(want)) {
+    // The compose name (`internal`) is accepted for the Engine's project-prefixed one (`worca_internal`).
+    const byShortName = names.filter((n) => n.endsWith(`_${want}`));
+    if (byShortName.length === 1) want = byShortName[0];
+    else throw new Error(`WORCA_WORKER_NETWORK=${want} is not a network of the controller's container (it is on: ${names.join(', ') || 'none'})`);
   }
-  if (!names.length) return 'bridge';
+  if (!names.length && !want) return 'bridge';
   const info = await Promise.all(names.map(async (name) => {
     let meta = null;
     try { meta = await inspect(name); } catch { meta = null; }
@@ -214,6 +219,13 @@ export async function pickWorkerNetwork({ attached = [], inspect = async () => n
       internal: meta ? meta.Internal === true : /(^|[_-])internal$/.test(name),
     };
   }));
+  if (want) {
+    // Named outright: still never a sidecar's link network (the Docker API proxy's, the broker's), which the auto-pick
+    // refuses for a reason — an agent there could drive the Engine.
+    const chosen = info.find((n) => n.name === want);
+    if (chosen?.link) throw new Error(`WORCA_WORKER_NETWORK=${want} is a sidecar's link network (${chosen.api ? 'the Docker API proxy' : 'the broker'}): workers never join it`);
+    return want;
+  }
   const usable = info.filter((n) => !n.link);
   if (!usable.length) throw new Error(`the controller's container is only on sidecar link networks (${names.join(', ')}): workers need a network they share with it`);
   const confined = usable.filter((n) => n.internal);
@@ -231,7 +243,8 @@ export async function createDockerBackend({ env = process.env, log = () => {}, a
   let self;
   try { self = await docker.inspect(selfId); } catch (err) { throw new Error(`cannot inspect the controller's own container "${selfId}" (${err.message}); set WORCA_CONTROLLER_CONTAINER to its name or id, and run the controller as a container`); }
   const template = {
-    mounts: workerMountsFrom(self.Mounts, { enginePath: dockerEndpoint(env).socketPath || null }),   // the engine's socket under any name stays out
+    mounts: workerMountsFrom(self.Mounts, { enginePath: dockerEndpoint(env).socketPath || null, sshAgent: String(env.SSH_AUTH_SOCK || '').trim() || null,
+      seedClaude: join(String(env.HOME || '').trim() || homedir(), '.claude') }),   // the engine's socket and the SSH agent stay out; the login volume is wherever this controller's HOME is
     network: await pickWorkerNetwork({ attached: Object.keys(self.NetworkSettings?.Networks || {}), inspect: (n) => docker.network(n), override: env.WORCA_WORKER_NETWORK, log }),
     // The uid this process runs as — not the container's configured start user: with agent isolation the controller
     // starts as root and its entrypoint drops to `worca`, and a worker created as `0:0` with every capability

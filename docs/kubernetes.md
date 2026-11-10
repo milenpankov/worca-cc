@@ -190,6 +190,15 @@ for a pod to leave `Pending` before it fails the run with the reason (no node, n
 
 ## Credentials
 
+**The worker's own token.** Each worker pod carries a one-time token (`WORCA_WORKER_TOKEN`) in its
+spec, which its process presents once to the controller's worker port and then deletes from its
+environment. Until that moment, anyone who can `get pods` in the namespace can read it, and a pod
+that reaches the worker port and presents it first takes the worker's place and receives the
+spawn's environment. The token is valid for the start window only (the start timeout, two minutes
+by default) and for one connection, but the namespace is the trust boundary: give `get pods` and
+network access to the worker port only to operators you would hand the agents' credentials to,
+and keep `networkPolicy.enabled` on so only worker pods reach that port.
+
 Agents need a model credential; GitHub tokens stay with the controller.
 
 **Without the broker**, put `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` in a Secret and

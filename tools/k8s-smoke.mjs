@@ -34,8 +34,8 @@ function parseArgs(argv) {
     else if (a === '--context') out.context = argv[++i];
     else if (a === '--namespace' || a === '-n') out.namespace = argv[++i];
     else if (a === '--tag') out.tag = argv[++i];
-    else if (a === '--image') out.controllerImage = argv[++i];           // a pushed controller image (repository, no tag) for --context
-    else if (a === '--worker-image') out.workerImage = argv[++i];        // its worker image repository (the smoke appends <tag>-claude)
+    else if (a === '--image') { out.controllerImage = argv[++i]; out.build = false; }   // a pushed controller image (repository, no tag) for --context: nothing to build here
+    else if (a === '--worker-image') { out.workerImage = argv[++i]; out.build = false; }   // its worker image repository (the smoke appends <tag>-claude)
     else if (a === '--values' || a === '-f') out.values.push(argv[++i]);
     else if (a === '--help' || a === '-h') { console.log('usage: node tools/k8s-smoke.mjs [--no-build] [--keep] [--cluster <kind name>] [--context <kube context>] [--image <repo>] [--worker-image <repo>] [-n <namespace>] [--tag <image tag>] [-f <values.yaml>]…'); process.exit(0); }
     else { console.error(`k8s:smoke: unknown argument ${a}`); process.exit(2); }
@@ -81,10 +81,11 @@ async function main() {
       sh('kind', ['load', 'docker-image', '--name', a.cluster, ctrl, worker], { quiet: true });
     }
     // kind stores a loaded `worca:local` as docker.io/library/worca:local; the chart renders <registry>/<repository>:<tag>.
-    const [ctrlRepo] = ctrl.split(':');
-    const [workerRepo] = worker.split(':');
+    const repoPart = (ref) => { const i = ref.lastIndexOf(':'); return i > ref.lastIndexOf('/') ? ref.slice(0, i) : ref; };   // a registry port is before the last `/`
+    const ctrlRepo = repoPart(ctrl);
+    const workerRepo = repoPart(worker);
     const repoOf = (r) => (r.includes('/') ? r : `library/${r}`);
-    const registryOf = (r) => (r.includes('/') && r.split('/')[0].includes('.') ? r.split('/')[0] : 'docker.io');
+    const registryOf = (r) => (r.includes('/') && /[.:]/.test(r.split('/')[0]) ? r.split('/')[0] : 'docker.io');   // a registry has a dot or a port
     const set = [
       `image.registry=${registryOf(ctrlRepo)}`, `image.repository=${repoOf(ctrlRepo).replace(/^[^/]+\.[^/]+\//, '')}`, `image.tag=${a.tag}`, 'image.pullPolicy=IfNotPresent',
       `worker.image.registry=${registryOf(workerRepo)}`, `worker.image.repository=${repoOf(workerRepo).replace(/^[^/]+\.[^/]+\//, '')}`,

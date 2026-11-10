@@ -50,8 +50,6 @@ export async function relayAskLine(token, line) {
   const entry = askRelays?.get(String(token || ''));
   if (!entry) return { lines: null, error: 'relay: unknown or finished turn' };
   if (typeof line !== 'string') return { lines: null, error: 'relay: line is required' };
-  // One line at a time per turn (the child sends sequentially), so the output collected
-  // between feed and idle is this line's answer.
   // In the chat's executor scope: what a tool spawns (a script the chat wrote and benches, a task classifier on the
   // chat's engine) runs on the chat's worker, not in this container beside the database. No scope: as before.
   // One line at a time per turn, in arrival order: the child sends sequentially, but a relay that gave up waiting
@@ -142,7 +140,7 @@ export async function reapWorkersAtBoot({ rowOf = null, threadOf = null, keepRun
   // fails keeps the HOME: never delete on doubt.
   const keepChat = (id) => { if (!threadOf) return true; try { return !!threadOf(id); } catch { return true; } };
   // The same rule for runs: no lookup given, or one that throws, keeps the HOME (a paused run's sessions are in it).
-  const keepRunSafe = keepRun ?? ((id) => { if (!rowOf) return true; try { return keepsWorkerHome(rowOf(id)); } catch { return true; } });
+  const keepRunSafe = (id) => { try { return keepRun ? !!keepRun(id) : (rowOf ? keepsWorkerHome(rowOf(id)) : true); } catch { return true; } };
   const out = {};
   try { out.workers = await WORKERS.reapAtBoot(); } catch (err) { error(`[worca-ui] worker reap failed: ${err && err.message ? err.message : err}`); }
   try {

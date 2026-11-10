@@ -9,6 +9,7 @@ import { classifyError } from '../recoverable-error.mjs';
 import { bridgeEvents } from '../bridge/telemetry.mjs';
 import { resolveClaudeBin } from '../preflight.mjs';
 import { CLAUDE_AGENTS_FILE_MIN } from '../session-mode.mjs';
+import { isLoopbackUrl } from '../executor/shared.mjs';   // the one loopback predicate (the worker env scrub uses it too)
 import { CLAUDE_CLI } from './cli-specs.mjs';
 import { hostGuardEnabled, hostGuardHookEntry, hostGuardSystemPrompt } from '../host-guard.mjs';
 import { memoryUsageHookEntry } from '../memory-usage.mjs';
@@ -825,12 +826,6 @@ function brokerSpawnError(message, errorClass = 'auth') {
   return err;
 }
 
-function isLoopbackUrl(v) {
-  try {
-    const h = new URL(v).hostname.replace(/^\[|\]$/g, '');
-    return h === '127.0.0.1' || h === 'localhost' || h === '::1';
-  } catch { return false; }
-}
 
 /** Which broker slot a spawn's model env routes to: {slot}, {bridge:true}, or {error}. */
 export function brokerRouteFor(modelEnv, env = process.env) {

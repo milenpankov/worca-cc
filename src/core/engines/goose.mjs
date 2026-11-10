@@ -57,7 +57,7 @@ import { currentOwner } from '../billing.mjs';
 import { hostGuardEnabled, hostGuardSystemPrompt } from '../host-guard.mjs';
 import { CAPABILITY_KEYS } from './capabilities.mjs';
 import { superviseSpawn, guardPid, composeSpawnEnv, cleanRunEnv, safeEmit } from './spawn.mjs';
-import { spawnHomeDir } from '../executor/index.mjs';
+import { spawnHomeDir, spawnsRemotely } from '../executor/index.mjs';
 import { createRedactor } from '../redact.mjs';
 import { strongestClass } from '../recoverable-error.mjs';
 import { scopeLauncherEnv } from '../mcp/launch.mjs';
@@ -403,7 +403,7 @@ export async function runGooseProcess({
   // A relayed chat runs goose as the person's agent user (agent-user.mjs), which cannot write worca's home: its chat home
   // is a worca folder in that user's own home (as a relayed chat on another engine reads that user's own config), which
   // goose creates itself. Otherwise it is worca's (gooseChatHome).
-  const agentId = ask && asAgent ? agentIdentityFor(currentOwner()) : null;
+  const agentId = ask && asAgent && !spawnsRemotely() ? agentIdentityFor(currentOwner()) : null;   // on a worker the container is the isolation: no agent user, no 0700 home of another uid
   const home = chatHome || (agentId ? gooseAgentChatHome(agentId.home) : gooseChatHome());
   const realHome = agentId ? agentId.home : spawnHomeDir();   // on a worker: the worker's, where its MCP servers run
 

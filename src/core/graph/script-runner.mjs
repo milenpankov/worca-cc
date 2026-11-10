@@ -19,7 +19,7 @@ import { normalizeReview } from '../protocol.mjs';
 import { readVerdict, missingVerdictWarning } from './exec-io.mjs';
 import { AWAIT_PORT, PARAMS_PORT } from '../../shared/graph/constants.mjs';
 import { DEFAULT_EXIT_CODES, DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, SCRIPT_RUNTIMES, pythonMissingSentence, overlayWiredParams } from '../../shared/graph/script-meta.mjs';
-import { probePython } from './python-probe.mjs';
+import { probePython, pythonCandidates } from './python-probe.mjs';
 import { stripHostCredentials } from '../host-credentials.mjs';
 import { withoutProxyLogin } from '../env-proxy.mjs';
 import { agentIdentity, agentSpawn, killAgentGroupSync } from '../agent-user.mjs';
@@ -27,7 +27,7 @@ import { agentIdentityFor } from '../agent-pool.mjs';
 import { currentOwner } from '../billing.mjs';
 import { gitAvailable } from '../git-available.mjs';
 import { withNoGitPath } from '../nogit-stub.mjs';
-import { sessionFor, spawnsRemotely } from '../executor/index.mjs';
+import { sessionFor, spawnsRemotely, executorInProcess } from '../executor/index.mjs';
 import { abortError } from '../executor/shared.mjs';
 import { createRemoteChild } from '../executor/remote-child.mjs';
 
@@ -617,7 +617,9 @@ export async function runScriptExecution(ctx) {
     const file = programFile();
     // On a worker the interpreter is the worker image's, not this container's: nothing to probe here (a worker
     // without one fails the spawn, and says so).
-    const probe = spawnsRemotely() ? { ok: true, command: [String(process.env.WORCA_PYTHON || '').trim() || 'python3'] } : await probePython();   // a configured interpreter by name: the worker's PATH resolves it
+    // On a worker the interpreter is the worker image's: the configured command (WORCA_PYTHON, the pythonPath setting, else
+    // python3) goes as named and the worker's PATH resolves it. Under the in-process backend it is this machine's: probed.
+    const probe = spawnsRemotely() && !executorInProcess() ? { ok: true, command: pythonCandidates()[0].command } : await probePython();
     if (!probe.ok) throw scriptError(pythonMissingSentence(key));
     const [exe, ...pre] = probe.command;
     run = await spawnOrThrow({ file: exe, args: [...pre, '-u', PY_HARNESS_PATH, file], cwd: envelope.ctx.cwd,
@@ -626,7 +628,7 @@ export async function runScriptExecution(ctx) {
       // The worker image has no python (the slim images ship none): the sentence a local preflight would have given,
       // with the image that has one.
       // (A working directory the worker cannot see is an ENOENT too: the worker names it, and that message stands.)
-      if (spawnsRemotely() && err?.code === 'ENOENT' && !/working directory .* does not exist on this worker/.test(String(err.message))) {
+      if (spawnsRemotely() && !executorInProcess() && err?.code === 'ENOENT' && !/working directory .* does not exist on this worker/.test(String(err.message))) {
         throw scriptError(`${pythonMissingSentence(key).replace('on this machine', 'in the worker image').replace(' (set WORCA_PYTHON)', '')}; a slim worker image ships no python — use the -full image (WORCA_TAG=<version>-full, or worker.variant: full in the Helm chart), or name an interpreter the image has with WORCA_PYTHON`);
       }
       throw err;

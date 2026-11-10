@@ -14,7 +14,7 @@
 // connection dropped; 78 (EX_CONFIG) when the assignment is incomplete; `--check` prints the
 // capabilities as JSON and exits 0 without connecting (image smoke tests).
 import { readFileSync, mkdirSync, existsSync, copyFileSync, chmodSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { worcaHome } from '../core/projects.mjs';
 import { parseScopeKey } from '../core/executor/scope.mjs';
 import { workerHomeDir } from '../core/executor/index.mjs';
@@ -46,7 +46,7 @@ export function readWorkerConfig(env = process.env) {
   if (errors.length) return { errors };
   // The controller's rule (executor/index.mjs workerHomeDir), under the worca home this env names: the controller cleans
   // the folder up by the same path, so nothing overrides it.
-  const home = workerHomeDir(scope, String(env.WORCA_HOME || '').trim() ? join(resolve(String(env.WORCA_HOME).trim()), '.worca-cc') : worcaHome());
+  const home = workerHomeDir(scope, worcaHome(env));
   return { url, scope, token, workerId, home, idleMs, errors: [] };
 }
 
@@ -58,24 +58,25 @@ export async function runWorkerCli(args = [], { env = process.env, out = (l) => 
   }
   const cfg = readWorkerConfig(env);
   if (cfg.errors.length) { for (const e of cfg.errors) err(`worca worker: ${e}`); return EX_CONFIG; }
+  // The token leaves the environment before any child can read it: the engine probes below spawn every CLI's
+  // `--version`, and children get their env from the controller anyway.
+  delete env.WORCA_WORKER_TOKEN; delete env.WORCA_WORKER_TOKEN_FILE;
+  const graceMs = envInt(env, 'WORCA_SIGTERM_GRACE_MS', 5000);
   try { mkdirSync(cfg.home, { recursive: true, mode: 0o700 }); } catch (e) { err(`worca worker: cannot create HOME ${cfg.home}: ${e.message}`); return EX_CONFIG; }
   const seeded = seedClaudeLogin(cfg.home, env.WORCA_WORKER_SEED_CLAUDE);
   if (seeded.length) out(`worca worker: seeded ${seeded.join(', ')} from ${env.WORCA_WORKER_SEED_CLAUDE}`);
   const capabilities = await probeCapabilities({ env });
   const installed = Object.entries(capabilities.engines).filter(([, v]) => v).map(([k, v]) => `${k} ${v.version || '?'}`);
   out(`worca worker ${cfg.workerId} for ${cfg.scope.kind}:${cfg.scope.id} — engines: ${installed.join(', ') || 'none'}; HOME ${cfg.home}`);
-  // The token leaves the environment before any child can read it (children get their env from the controller anyway).
-  delete env.WORCA_WORKER_TOKEN;
-  let w = start({ ...cfg, capabilities, log: out });
+  let w = start({ ...cfg, capabilities, lostGraceMs: graceMs, log: out });
   // The chat relay on this container's loopback (relay-shim.mjs); a chat turn's MCP child posts to it.
   let shim = null;
   const relayPort = envInt(env, 'WORCA_WORKER_RELAY_PORT', DEFAULT_RELAY_PORT);
   const relayTimeout = envInt(env, 'WORCA_WORKER_RELAY_TIMEOUT_MS', undefined);
   try { shim = await startRelayShim({ relay: (token, line, o) => w.relay(token, line, o), port: relayPort, ...(relayTimeout ? { timeoutMs: relayTimeout } : {}), log: out }); }
   catch (e) { err(`worca worker: relay shim could not listen on 127.0.0.1:${relayPort} (${e.message}); chats on this worker will have no worca tools`); }
-  const graceMs = envInt(env, 'WORCA_SIGTERM_GRACE_MS', 5000);
   let stopping = false;
-  const onSignal = () => { stopping = true; w.leave(graceMs); };
+  const onSignal = () => { stopping = true; w.leave(graceMs, { cut: true }); };   // from outside: a live step is lost, not finished
   signals.on('SIGTERM', onSignal);
   signals.on('SIGINT', onSignal);
   // There is no reconnect once connected. But a FIRST connect that cannot be made — the controller's Service has no
@@ -90,7 +91,7 @@ export async function runWorkerCli(args = [], { env = process.env, out = (l) => 
     out(`worca worker: the controller at ${cfg.url} is not reachable yet (${w.endedWith}); trying again`);
     await new Promise((r) => setTimeout(r, Math.min(500 * attempt, 3000)));
     if (stopping) break;   // told to stop while it waited: no new attempt (the previous one's exit code stands)
-    w = start({ ...cfg, capabilities, log: out });
+    w = start({ ...cfg, capabilities, lostGraceMs: graceMs, log: out });
   }
   signals.off('SIGTERM', onSignal);
   signals.off('SIGINT', onSignal);

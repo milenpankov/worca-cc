@@ -733,3 +733,35 @@ test('one release per entry; a welcome that cannot be sent fails the start at on
   const r3 = createWorkerRegistry({ backend: createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS }), host: '::1', port: 0, log: () => {} });
   try { await r3.listen(); assert.match(r3.controllerUrl, /^ws:\/\/\[::1\]:\d+$/); } catch (e) { if (!/EADDRNOTAVAIL|EAFNOSUPPORT/.test(String(e?.code || e))) throw e; } finally { await r3.closeAll(); }
 });
+
+test('a worker stopped from outside while a step runs is a lost worker, so the run retries it; with nothing running it is a leave', POSIX, async () => {
+  const b = createInProcessBackend({ homeRoot: worcaHome(), capabilities: CAPS });
+  const got = [];
+  const r = createWorkerRegistry({ backend: b, host: '127.0.0.1', port: 0, startTimeoutMs: 5000, pingMs: 200, log: (m) => got.push(m) });
+  await r.listen();
+  installExecutor({ kind: 'docker', registry: r });
+  try {
+    const scope = { kind: 'run', id: 'evicted' };
+    await r.acquire(scope);
+    const p = withExecutorScope(scope, () => superviseSpawn(base({ file: script('echo up; sleep 30'), args: [] }))).then(() => null, (e) => e);
+    await new Promise((res) => setTimeout(res, 200));
+    await b.live[0].worker.leave(300, { cut: true });   // the pod is evicted, `docker stop`: SIGTERM to the worker
+    const err = await p;
+    assert.equal(err?.code, 'EWORKERLOST', 'not "exited with SIGTERM": the failure policy retries on a fresh worker');
+    for (let i = 0; i < 100 && !got.some((l) => /evicted is gone/.test(l)); i++) await new Promise((res) => setTimeout(res, 10));
+    assert.ok(got.some((l) => /run:evicted is gone/.test(l)), got.join('\n'));
+    // Nothing running: an orderly leave.
+    const s2 = await r.acquire({ kind: 'run', id: 'quiet' });
+    await b.live.find((h) => h.scopeKey === 'run:quiet').worker.leave(300, { cut: true });
+    for (let i = 0; i < 100 && !s2.closed; i++) await new Promise((res) => setTimeout(res, 10));
+    assert.equal(s2.closeReason, 'bye');
+  } finally { installExecutor(registry ? { kind: 'docker', registry } : null); await r.closeAll(); }
+});
+
+test('a frame on a socket that is no longer open fails at once rather than being dropped', () => {
+  const sock = Object.assign(new EventEmitter(), { send() {}, terminate() {}, close() {}, ping() {}, readyState: 2 });   // CLOSING
+  const s = createWorkerSession(sock, { workerId: 'w-closing', scope: { kind: 'run', id: 'c' }, capabilities: CAPS, pid: 1, pingMs: 60_000 });
+  let failed = null;
+  s.exec({ file: 'sh', args: [], cwd: null, env: {}, stdin: null }, { onStarted() {}, onLines() {}, onSpawnError: (e) => { failed = e; }, onExit() {}, onLost() {} });
+  return new Promise((resolve) => queueMicrotask(() => { assert.equal(failed?.code, 'EWORKERLOST'); assert.match(failed.message, /socket is not open/); resolve(); }));
+});

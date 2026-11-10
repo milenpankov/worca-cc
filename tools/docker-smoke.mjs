@@ -35,7 +35,8 @@
 //
 // With BOTH --image and --worker-image, step 6 runs the two together: the controller under
 // WORCA_EXECUTOR=docker (given the socket) runs a mock workflow whose shell script node executes
-// on a worker container it starts from the worker image and removes when the run ends.
+// on a worker container it starts from the worker image and removes when the run ends. The controller's
+// own checks are not repeated then (CI runs them the step before, on the same image).
 // ESM, no external dependencies.
 
 import { spawnSync } from 'node:child_process';
@@ -381,7 +382,8 @@ async function workersEndToEnd(ctrlImage, workerImg) {
 async function main() {
   if (a.workerImage) await workerImage(a.workerImage);
   if (a.workerImage && a.image) await workersEndToEnd(a.image, a.workerImage);
-  if (!a.image) {
+  // With a worker image named, the controller's own suite is not run again: CI ran it the step before, on the same image.
+  if (!a.image || a.workerImage) {
     if (failed) process.exit(1);
     console.log('docker:smoke PASSED');
     return;

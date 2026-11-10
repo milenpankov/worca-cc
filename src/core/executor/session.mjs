@@ -34,6 +34,8 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
 
   const send = (frame) => {
     if (closed) throw new Error(`worker ${workerId} is gone (${closeReason})`);
+    // ws discards a frame on a closing or closed socket without a word when no callback is given: say so instead.
+    if (ws.readyState !== 1) throw Object.assign(new Error('socket is not open'), { code: 'ENOTCONN' });
     ws.send(encodeFrame(frame));
   };
   const trySend = (frame) => { try { send(frame); } catch { /* closing */ } };
@@ -124,7 +126,7 @@ export function createWorkerSession(ws, { workerId, scope, capabilities, pid, pi
         execs.delete(id);
         // A frame the protocol refuses carries its own code (EPROTO malformed, E2BIG too large); anything else is the
         // socket: the worker is gone, which the failure policy retries on a fresh one like any lost worker.
-        const lost = closed || !err?.code;
+        const lost = closed || !err?.code || err.code === 'ENOTCONN';   // a socket already closing counts as gone
         queueMicrotask(() => handlers.onSpawnError({ code: lost ? 'EWORKERLOST' : err.code, message: err.message, ...(lost ? { errorClass: 'network' } : {}) }));
       }
       return id;

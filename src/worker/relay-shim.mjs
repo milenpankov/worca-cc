@@ -25,7 +25,9 @@ export function startRelayShim({ relay, port = DEFAULT_RELAY_PORT, host = '127.0
     if (!token) return reply(401, { error: 'relay token required' });
     let size = 0; const chunks = [];
     let tooBig = false;
-    req.on('data', (c) => { size += c.length; if (tooBig) return; if (size > BODY_MAX) { tooBig = true; reply(413, { error: `body larger than ${BODY_MAX} bytes` }); req.destroy(); return; } chunks.push(c); });
+    // Over the limit: answer 413 and let the rest of the body drain (a destroy here would reset the socket before the
+    // client reads the answer), then the connection closes.
+    req.on('data', (c) => { size += c.length; if (tooBig) return; if (size > BODY_MAX) { tooBig = true; chunks.length = 0; res.setHeader('connection', 'close'); reply(413, { error: `body larger than ${BODY_MAX} bytes` }); return; } chunks.push(c); });
     req.on('end', async () => {
       if (tooBig) return;
       let line;

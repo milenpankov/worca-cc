@@ -50,8 +50,8 @@ spec:
         {{- range .Values.networkPolicy.workerEgressCidrs }}
         - ipBlock:
             cidr: {{ . | quote }}
-            {{- /* Kubernetes refuses an except outside its cidr: the private-range exceptions apply to the whole-internet block only. */}}
-            {{- if and $.Values.networkPolicy.workerEgressExceptCidrs (or (eq . "0.0.0.0/0") (eq . "::/0")) }}
+            {{- /* Kubernetes refuses an except outside its cidr: the (IPv4) private-range exceptions apply to the IPv4 whole-internet block only. */}}
+            {{- if and $.Values.networkPolicy.workerEgressExceptCidrs (eq . "0.0.0.0/0") }}
             except:
               {{- toYaml $.Values.networkPolicy.workerEgressExceptCidrs | nindent 14 }}
             {{- end }}

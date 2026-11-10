@@ -401,3 +401,18 @@ test('a relayed body over the limit gets a 413, not a dropped connection', async
     assert.equal(res.status, 413, res?.message);
   } finally { await shim.close(); }
 });
+
+test("a run's own browsers path stays; the shared caches are the worker's; the version line is never an update notice", async () => {
+  const workerEnv = { npm_config_cache: '/worca/.worca-cc/worker-cache/npm', UV_CACHE_DIR: '/worca/.worca-cc/worker-cache/uv', PLAYWRIGHT_BROWSERS_PATH: '/worca/.worca-cc/worker-cache/playwright' };
+  const e = childEnv({ PATH: '/bin', npm_config_cache: '/home/worca/.npm', PLAYWRIGHT_BROWSERS_PATH: '0', SSH_AUTH_SOCK: '/ssh-agent.sock' }, { home: '/h', workerEnv, exists: () => true });
+  assert.equal(e.npm_config_cache, '/worca/.worca-cc/worker-cache/npm', 'a cache is a cache: the shared one');
+  assert.equal(e.PLAYWRIGHT_BROWSERS_PATH, '0', "the run pointed Playwright at the project's own browsers: kept");
+  assert.equal(childEnv({ PATH: '/bin' }, { home: '/h', workerEnv, exists: () => true }).PLAYWRIGHT_BROWSERS_PATH, '/worca/.worca-cc/worker-cache/playwright', 'nothing set: the shared default');
+  assert.equal('SSH_AUTH_SOCK' in e, false, "the controller's SSH agent is its push credential: never a child's");
+  const { probeCapabilities } = await import('../src/worker/capabilities.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'worca-ver-'));
+  writeFileSync(join(dir, 'codex'), '#!/bin/sh\necho "A new version 9.9.9 is available! Run npm i -g codex"\necho "codex-cli 0.162.0"\n', { mode: 0o755 });
+  const caps = await probeCapabilities({ engines: ['codex'], env: { PATH: dir } });
+  assert.equal(caps.engines.codex.version, 'codex-cli 0.162.0');
+  rmSync(dir, { recursive: true, force: true });
+});

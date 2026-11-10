@@ -50,6 +50,7 @@ services:
     networks:
       - default   # the provider is reached from here (the box's proxy settings apply)
       - broker
+      - ${WORCA_UPLINK_NETWORK:-default}   # with the egress overlay: the workers' network too, so they resolve `broker` (compose folds the duplicate)
     environment:
       WORCA_BROKER_MODE: ${WORCA_BROKER_MODE:-single}
       WORCA_BROKER_SECRET: ${WORCA_BROKER_SECRET:?set WORCA_BROKER_SECRET in .env}

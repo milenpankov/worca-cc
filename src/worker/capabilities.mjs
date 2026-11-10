@@ -32,8 +32,10 @@ const versionOf = (bin, timeoutMs) => new Promise((resolve) => {
   execFile(bin, ['--version'], { timeout: timeoutMs, windowsHide: true, maxBuffer: 64 * 1024 }, (err, stdout) => {
     if (err) return resolve(null);
     // The first line that carries a version: an update notice may come before it.
+    // The first line that carries a version and is not an update notice (which names a NEWER version).
     const lines = String(stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const line = lines.find((l) => /\d+\.\d+/.test(l)) || lines[0] || '';
+    const versioned = lines.filter((l) => /\d+\.\d+/.test(l));
+    const line = versioned.find((l) => !/available|update|upgrade|new version|newer/i.test(l)) || versioned[0] || lines[0] || '';
     resolve(line.slice(0, 256) || null);
   });
 });

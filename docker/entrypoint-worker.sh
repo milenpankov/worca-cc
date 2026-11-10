@@ -51,19 +51,14 @@ if [ "$worker_cmd" = 1 ]; then
     fi
   done
 
-  # 3. HOME: one per assignment, on the shared volume (the controller cleans it up). The scope is kind:id, used as
-  #    is: the worker process (src/worker/main.mjs) and the controller (executor/index.mjs workerHomeDir) build the
-  #    same path from the same id — the controller owns the layout, so nothing overrides it here.
+  # 3. HOME is the worker process's business (src/worker/main.mjs, the controller's rule in executor/index.mjs
+  #    workerHomeDir: one folder per assignment on the shared volume, which the controller cleans up). The scope is
+  #    checked here so a bad assignment exits 78 before anything starts.
   case "$WORCA_WORKER_SCOPE" in
     run:?*|chat:?*) ;;
     *) log "WORCA_WORKER_SCOPE must be run:<id> or chat:<id> (got '${WORCA_WORKER_SCOPE}')"; exit 78 ;;   # EX_CONFIG
   esac
-  kind="${WORCA_WORKER_SCOPE%%:*}"
-  id="${WORCA_WORKER_SCOPE#*:}"
   wh="${WORCA_HOME:-/worca}/.worca-cc"
-  export HOME="$wh/worker-homes/$kind/$id"
-  mkdir -p "$HOME"
-  chmod 0700 "$HOME" 2>/dev/null || true
 
   # 4. Package caches on the volume, so a second worker for the same install reuses what the first
   #    fetched (npx-run MCP servers, uv tools, Playwright's browser in -full).
@@ -80,7 +75,7 @@ worca_corporate_ca
 # 6. Say what this worker is for (never the token, never the controller URL's credentials). Which engine binaries
 #    it carries, and their versions, is the worker's own first log line: it probes them once for its hello.
 if [ "$worker_cmd" = 1 ]; then
-  log "engine ${WORCA_WORKER_ENGINE:-?}; scope ${WORCA_WORKER_SCOPE}; worker ${WORCA_WORKER_ID}; HOME ${HOME}"
+  log "engine ${WORCA_WORKER_ENGINE:-?}; scope ${WORCA_WORKER_SCOPE}; worker ${WORCA_WORKER_ID}"
 fi
 
 exec "$@"

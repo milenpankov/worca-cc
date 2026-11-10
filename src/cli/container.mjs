@@ -9,7 +9,7 @@
 // tests never spawn a runtime.
 
 import { spawnSync } from 'node:child_process';
-import { CONTROLLER_LABEL, INSTANCE_LABEL } from '../core/executor/shared.mjs';
+import { INSTANCE_LABEL } from '../core/executor/shared.mjs';
 import { workerImageFor } from '../core/executor/backends/docker.mjs';
 /** The published controller image (docker/compose.yml WORCA_IMAGE default); worker images are `<image>-worker`. */
 const DEFAULT_IMAGE = 'ghcr.io/sinishadjukic/worca';
@@ -29,7 +29,6 @@ import { resolveUpstream, upstreamLabel } from '../core/upstream-proxy.mjs';
 export const COMPOSE_SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docker');
 export const OVERLAYS = Object.freeze(['egress', 'ssh', 'teams', 'clonein', 'workers', 'broker']);
 /** The label every worker container the controller starts carries (src/core/executor/backends/docker.mjs). */
-export const WORKER_CONTAINER_LABEL = CONTROLLER_LABEL;   // the label the docker backend puts on every worker (executor/shared.mjs)
 export const WORKER_INSTANCE_LABEL = INSTANCE_LABEL;      // …and which installation it belongs to: the Compose project
 
 /**
@@ -184,8 +183,7 @@ export function composeFileArgs(overlays) {
 }
 
 function parseWith(s) {
-  if (s === '' || s === undefined) return { error: `--with needs a comma-separated list of overlays (known: ${OVERLAYS.join(', ')}); to run with none, start without --with and remove the remembered ones from ${STATE_FILE}` };
-  if (!s) return [];
+  if (!s) return { error: `--with needs a comma-separated list of overlays (known: ${OVERLAYS.join(', ')}); to run with none, start without --with and remove the remembered ones from ${STATE_FILE}` };
   const list = s.split(',').map((x) => x.trim()).filter(Boolean);
   const bad = list.filter((x) => !OVERLAYS.includes(x));
   if (bad.length) return { error: `--with: unknown overlay ${bad.join(', ')} (known: ${OVERLAYS.join(', ')})` };

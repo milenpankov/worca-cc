@@ -124,7 +124,9 @@ test('Dockerfile: controller last; the worker stage runs as worca with no sudo, 
       assert.doesNotMatch(e, /setpriv|sudo/, 'a worker never changes user');
       for (const v of ['WORCA_CONTROLLER_URL', 'WORCA_WORKER_SCOPE', 'WORCA_WORKER_ID', 'WORCA_WORKER_TOKEN_FILE']) assert.match(e, new RegExp(v), `${v} is checked`);
       assert.match(e, /fsGroup is not applied on NFS volumes: export the share owned by uid 1000 or anonuid=1000/, 'the unwritable-volume hint');
-      assert.match(e, /export HOME="\$wh\/worker-homes\/\$kind\/\$id"/, 'HOME per assignment, under the shared worca home (src/worker/main.mjs agrees)');
+      assert.doesNotMatch(e, /export HOME=/, 'HOME is the worker process\'s business (src/worker/main.mjs builds it by the controller\'s rule)');
+      assert.match(e, /run:\?\*\|chat:\?\*\) ;;/, 'the scope is checked before anything starts');
+      assert.match(e, /wh="\$\{WORCA_HOME:-\/worca\}\/\.worca-cc"/, 'under the shared worca home (src/worker/main.mjs agrees)');
       assert.match(e, /npm_config_cache="\$wh\/worker-cache\/npm"/);
       assert.match(e, /UV_CACHE_DIR="\$wh\/worker-cache\/uv"/);
       assert.match(e, /PLAYWRIGHT_BROWSERS_PATH="\$wh\/worker-cache\/playwright"/);
@@ -616,6 +618,7 @@ test('the socket proxy, the one container holding the Docker socket, is pinned b
   const docker = readFileSync(new URL('../src/core/executor/backends/docker.mjs', import.meta.url), 'utf8');
   assert.match(docker, /const agent = new http\.Agent\(\{ keepAlive: false \}\);/, 'its own agent: an HTTPS_PROXY in the environment never carries Engine calls');
   const release = readFileSync(new URL('../.github/workflows/docker-image.yml', import.meta.url), 'utf8');
-  assert.match(release, /if \[ "\$BUILD_RESULT" != "success" \] \|\| \[ "\$BUILD_COMPLETE" != "true" \]; then\n\s+echo "::warning::a build row did not deliver its digests/, 'moving tags move together or not at all — also when a fragile row (continue-on-error, so the job still says success) delivered nothing');
+  assert.match(release, /if \[ "\$BUILD_RESULT" != "success" \] \|\| \[ "\$BUILD_COMPLETE" != "true" \]; then\n\s+echo "::error title=moving tags held::a build row did not deliver its digests/, 'moving tags move together or not at all — also when a fragile row (continue-on-error, so the job still says success) delivered nothing — and the hold is an error annotation plus a summary line, not a warning nobody reads');
+  assert.match(release, /GITHUB_STEP_SUMMARY/);
   assert.match(release, /pattern: digests-\*\n/, 'every row\'s digests are counted');
 });

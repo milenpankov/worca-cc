@@ -261,7 +261,8 @@ jobs:
           # row's failure does not fail the build job), this row still publishes its version tag, but a controller
           # `latest` must not get ahead of a worker image that did not build.
           if [ "$BUILD_RESULT" != "success" ] || [ "$BUILD_COMPLETE" != "true" ]; then
-            echo "::warning::a build row did not deliver its digests: $VERSION$suffix is published, the moving tags stay where they are"
+            echo "::error title=moving tags held::a build row did not deliver its digests: $VERSION$suffix is published, but latest/rc/$major/$minor stay where they were — fix the failed row and re-run to move them"
+            echo "### Moving tags held for $VERSION$suffix" >> "$GITHUB_STEP_SUMMARY"; echo "A build row did not deliver its digests; only the version tag was published." >> "$GITHUB_STEP_SUMMARY"
           elif [ "$CHANNEL" = "latest" ]; then
             major="${VERSION%%.*}"; minor="${VERSION%.*}"
             tags="$tags $minor$suffix $major$suffix latest$suffix"

@@ -20,7 +20,7 @@ const CONNECT_TIMEOUT_MS = 15_000;
  *   capabilities: object, idleMs?: number|null, pingMs?: number, log?: (msg:string) => void,
  *   onRelayResult?: (frame: object) => void }} o
  */
-export function startWorker({ url, token, scope, workerId, home, capabilities, idleMs = null, pingMs = DEFAULT_PING_MS, lostGraceMs = 5000, log = () => {} }) {
+export function startWorker({ url, token, scope, workerId, home, capabilities, idleMs = null, pingMs = DEFAULT_PING_MS, lostGraceMs = 5000, log = () => {} }) {   // lostGraceMs: main.mjs passes WORCA_SIGTERM_GRACE_MS
   const base = String(url).replace(/\/+$/, '');
   const target = base.endsWith(WORKER_WS_PATH) ? base : base + WORKER_WS_PATH;
   let resolveDone;
@@ -88,10 +88,15 @@ export function startWorker({ url, token, scope, workerId, home, capabilities, i
   };
   runner.onIdle(armIdle);
 
-  const leave = async (graceMs) => {
+  /** `cut`: stopped from outside (SIGTERM from a pod eviction, `docker stop`, the pod's deadline), not by the controller:
+   *  the live steps end without an exit frame and no bye is said, so the controller sees a lost worker and the run's
+   *  failure policy retries them on a fresh one, instead of a step that "exited with SIGTERM". */
+  const leave = async (graceMs, { cut = false } = {}) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    await runner.shutdown({ graceMs });
+    const hadLive = runner.liveCount > 0;
+    await runner.shutdown({ graceMs, cut: cut && hadLive });
+    if (cut && hadLive) { finish(1, 'stopped from outside while a step ran'); return; }
     await sayBye('shutdown');
     finish(0, 'shutdown');
   };

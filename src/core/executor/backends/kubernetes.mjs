@@ -160,6 +160,9 @@ export function createKubernetesBackend({ env = process.env, log = (msg) => cons
     let template;
     try { template = JSON.parse(text); } catch (err) { throw startFailure(`worker pod template ${templatePath} is not valid JSON: ${err.message}`); }
     try { workerContainer(template); } catch (err) { throw startFailure(`worker pod template ${templatePath}: ${err.message}`); }
+    // The template's own env is held to the rule the controller's is: a credential (GH_TOKEN, the broker secret, a model
+    // key) never travels in the pod spec, whoever put it there.
+    try { assertAllowedEnv(workerContainer(template).env || []); } catch (err) { throw startFailure(`worker pod template ${templatePath}: ${err.message}`); }
     return template;
   }
 

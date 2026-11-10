@@ -48,6 +48,7 @@ export function createWorkerRegistry({
   controllerUrl = process.env.WORCA_CONTROLLER_URL || null,
   maxWorkers = envInt('WORCA_WORKER_MAX', 20),
   startTimeoutMs = envInt('WORCA_WORKER_START_TIMEOUT_MS', 120_000),
+  outerStartMs = envInt('WORCA_WORKER_START_OUTER_MS', 10 * 60_000),   // the backend must have produced a container by then (image pulls included)
   chatIdleMs = envInt('WORCA_WORKER_CHAT_IDLE_MS', 15 * 60_000),
   helperIdleMs = envInt('WORCA_WORKER_HELPER_IDLE_MS', 2 * 60_000),   // a run's worker for another engine than the run's own
   tokenTtlMs = null,        // how long a worker has to present its token once its container exists; default: startTimeoutMs
@@ -63,7 +64,7 @@ export function createWorkerRegistry({
 } = {}) {
   if (!backend) throw new Error('createWorkerRegistry: a backend is required');
   const entries = new Map();   // `${scopeKey}|${class}` -> { scope, key, ek, engine, state:'starting'|'ready'|'closing', workerId, token, handle, session, waiters:[], startedAt, idleMs, timer, ctl, abandoned }
-  const tokens = new Map();    // token -> { key, ek, workerId, mintedAt, used }
+  const tokens = new Map();    // token -> { key, ek, workerId, armedAt, used }
   const scopeEntries = (key) => [...entries.values()].filter((e) => e.key === key);
   const releases = new Map();   // scopeKey -> how many times it was released while an acquire for it was in flight: the acquire compares before and after its await
   let sweeping = false;
@@ -88,7 +89,7 @@ export function createWorkerRegistry({
 
   const mintToken = (key, ek, workerId) => {
     const token = randomBytes(32).toString('base64url');
-    tokens.set(token, { key, ek, workerId, mintedAt: Date.now(), armedAt: null, used: false });
+    tokens.set(token, { key, ek, workerId, armedAt: null, used: false });
     return token;
   };
   const tokenOf = (req) => {
@@ -153,7 +154,7 @@ export function createWorkerRegistry({
       }
       entry.session = session;
       entry.state = 'ready';
-      clearTimeout(entry.timer); clearInterval(entry.probeTimer);
+      clearTimeout(entry.timer); clearTimeout(entry.outerTimer); clearInterval(entry.probeTimer);
       session.onClose((reason, { hadExecs = false } = {}) => {
         if (entries.get(t.ek) !== entry) return;
         entries.delete(t.ek);
@@ -175,7 +176,7 @@ export function createWorkerRegistry({
    *  and remove its container, now or when the backend hands it over. */
   function abandon(entry, reason) {
     entry.abandoned = true;
-    clearTimeout(entry.timer); clearInterval(entry.probeTimer);
+    clearTimeout(entry.timer); clearTimeout(entry.outerTimer); clearInterval(entry.probeTimer);
     if (entries.get(entry.ek) === entry) entries.delete(entry.ek);
     if (entry.token) tokens.delete(entry.token);
     try { entry.ctl.abort(); } catch { /* nothing listening */ }
@@ -203,6 +204,10 @@ export function createWorkerRegistry({
       idleMs: scope.kind === 'chat' ? chatIdleMs : (helper ? helperIdleMs : null), timer: null, probeTimer: null, ctl: new AbortController(), abandoned: false };
     entries.set(ek, entry);
     entry.token = mintToken(key, ek, workerId);
+    // The start timeout proper counts from the container's existence (below). A backend whose start never comes back
+    // (a hung Engine, a pod with no deadline) would leave a caller without a signal waiting for good: an outer deadline.
+    entry.outerTimer = setTimeout(() => { if (entry.state === 'starting' && !entry.abandoned) fail(entry, startFailure(`worker ${workerId} for ${key}: the backend did not start a container within ${Math.round(outerStartMs / 1000)} s`)); }, outerStartMs);
+    entry.outerTimer.unref?.();
     Promise.resolve()
       .then(() => backend.start({ scope, scopeKey: key, workerId, token: entry.token, controllerUrl: urlForWorkers(), idleMs: entry.idleMs, engine, env: {}, signal: entry.ctl.signal,
         connected: () => entry.state === 'ready' }))   // the backend's own wait may lose track of a container whose worker is already here
@@ -214,10 +219,13 @@ export function createWorkerRegistry({
         // A worker that exits before it connects (a bad assignment: exit 78, an unwritable volume, a controller URL
         // it cannot reach) would otherwise cost the whole start timeout and leave no reason behind.
         if (typeof backend.probe === 'function' && entry.state === 'starting') {
+          let probing = false;   // one probe at a time: a slow Engine must not have them stack up for the whole start window
           entry.probeTimer = setInterval(() => {
+            if (probing) return;
+            probing = true;
             Promise.resolve().then(() => backend.probe(handle)).then((why) => {
               if (why && entry.state === 'starting' && !entry.abandoned) fail(entry, startFailure(`worker ${workerId} for ${key} will not connect: ${why}`));
-            }, () => { /* the backend could not say: the start timeout still stands */ });
+            }, () => { /* the backend could not say: the start timeout still stands */ }).finally(() => { probing = false; });
           }, probeMs);
           entry.probeTimer.unref?.();
         }
@@ -259,7 +267,7 @@ export function createWorkerRegistry({
   }
   async function releaseEntryOnce(entry, { reason, graceMs }) {
     entry.state = 'closing';
-    clearTimeout(entry.timer); clearInterval(entry.probeTimer);
+    clearTimeout(entry.timer); clearTimeout(entry.outerTimer); clearInterval(entry.probeTimer);
     if (!entry.session) { try { entry.ctl.abort(); } catch { /* nothing listening */ } }   // still starting: stop the backend's wait
     if (entries.get(entry.ek) === entry) entries.delete(entry.ek);
     if (entry.token) tokens.delete(entry.token);
@@ -375,11 +383,11 @@ export function createWorkerRegistry({
     async _sweep() {
       sweepTokens();
       const now = Date.now();
-      for (const entry of [...entries.values()]) {
-        if (entry.state !== 'ready' || entry.idleMs == null) continue;
-        const s = entry.session;
-        if (s.liveExecCount === 0 && now - s.lastActiveAt > entry.idleMs) await releaseEntry(entry, { reason: 'idle' });
-      }
+      // The idle ones go together (a serial sweep of many would outlast the next tick), and only those still here: one
+      // whose worker left or was lost meanwhile has been removed by its close already.
+      const idle = [...entries.values()].filter((entry) => entry.state === 'ready' && entry.idleMs != null
+        && entry.session.liveExecCount === 0 && now - entry.session.lastActiveAt > entry.idleMs);
+      await Promise.all(idle.map((entry) => (entries.get(entry.ek) === entry && !entry.session.closed ? releaseEntry(entry, { reason: 'idle' }) : null)));
     },
 
     /** Remove every worker the backend still knows about: with one controller, all are orphans. */

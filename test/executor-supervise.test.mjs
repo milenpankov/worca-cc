@@ -607,8 +607,8 @@ test("a spawn that names no env never ships this process's environment raw to a 
 
 test('a python node on a worker without python fails with the python sentence and the image to use, not a bare ENOENT', () => {
   const src = readFileSync(new URL('../src/core/graph/script-runner.mjs', import.meta.url), 'utf8');
-  assert.match(src, /spawnsRemotely\(\) && err\?\.code === 'ENOENT' && !\/working directory .\* does not exist on this worker\/\.test\(String\(err\.message\)\)\)/, 'a working directory the worker cannot see is ENOENT too, and the worker names it');
-  assert.match(src, /command: \[String\(process\.env\.WORCA_PYTHON \|\| ''\)\.trim\(\) \|\| 'python3'\]/, 'a configured interpreter is honoured on a worker');
+  assert.match(src, /spawnsRemotely\(\) && !executorInProcess\(\) && err\?\.code === 'ENOENT' && !\/working directory .\* does not exist on this worker\/\.test\(String\(err\.message\)\)\)/, 'a working directory the worker cannot see is ENOENT too, and the worker names it; in-process workers run this machine\'s python');
+  assert.match(src, /spawnsRemotely\(\) && !executorInProcess\(\) \? \{ ok: true, command: pythonCandidates\(\)\[0\]\.command \}/, 'the configured interpreter (WORCA_PYTHON, the pythonPath setting) by the one rule');
 });
 
 test('a scope id is one path segment; the scrub keep-list never carries a glob; a nulled variable counts as left out', () => {
